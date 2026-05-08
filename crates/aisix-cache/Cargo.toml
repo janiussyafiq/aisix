@@ -19,11 +19,17 @@ thiserror.workspace = true
 tracing.workspace = true
 moka.workspace = true
 redis = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
+wiremock.workspace = true
 
 [features]
 default = ["memory"]
 memory = []
 redis = ["dep:redis"]
+# Semantic cache backend — DP calls AISIX-Cloud's /dp/cache/{lookup,put}
+# over HTTP. Cloud owns the embedding + pgvector similarity search;
+# DP just plumbs the prompt + scope and the response. See issue #116.
+semantic = ["dep:reqwest"]

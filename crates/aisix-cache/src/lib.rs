@@ -22,6 +22,8 @@ mod key;
 mod memory;
 #[cfg(feature = "redis")]
 mod redis;
+#[cfg(feature = "semantic")]
+mod semantic;
 
 pub use cache::{Cache, CacheError, CacheOutcome};
 pub use key::CacheKey;
@@ -30,3 +32,5 @@ pub use memory::{MemoryCache, DEFAULT_CAPACITY, DEFAULT_TTL};
 pub use redis::{
     RedisCache, DEFAULT_PREFIX as REDIS_DEFAULT_PREFIX, DEFAULT_TTL as REDIS_DEFAULT_TTL,
 };
+#[cfg(feature = "semantic")]
+pub use semantic::{SemanticBackend, SemanticError, DEFAULT_TIMEOUT as SEMANTIC_DEFAULT_TIMEOUT};
