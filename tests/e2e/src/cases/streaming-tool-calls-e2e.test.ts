@@ -53,18 +53,30 @@ const TOOL_NAME = "get_weather";
 // Arguments fragments — concatenation must equal CANONICAL_ARGS.
 // Split mid-key, mid-value, and mid-quote to exercise non-aligned
 // boundaries the assembler cannot trivially short-circuit on.
+//
+// These fragments contain literal `"` characters that are part of
+// the inner JSON the model is invoking. When the upstream serializes
+// each fragment as the value of `function.arguments` (a JSON string
+// field), those quotes need JSON-escaping in the wire payload — we
+// use JSON.stringify(fragment) below which adds the surrounding
+// quotes AND escapes any inner `"` and `\` to produce a valid
+// JSON-encoded string literal.
 const ARGS_FRAGMENTS = ['{"', "loc", 'ation":"Bei', 'jing"}'];
 const CANONICAL_ARGS = ARGS_FRAGMENTS.join("");
 const CANONICAL_PARSED = { location: "Beijing" };
 
+// Shorthand for embedding a string fragment as a JSON-encoded value
+// inside a template literal (handles inner quote/backslash escaping).
+const j = (s: string) => JSON.stringify(s);
+
 const SSE_EVENTS = [
   // Role delta + first tool_call fragment (carries id, type, name,
   // first slice of arguments).
-  `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"${TOOL_CALL_ID}","type":"function","function":{"name":"${TOOL_NAME}","arguments":"${ARGS_FRAGMENTS[0]}"}}]},"finish_reason":null}]}`,
+  `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":${j(TOOL_CALL_ID)},"type":"function","function":{"name":${j(TOOL_NAME)},"arguments":${j(ARGS_FRAGMENTS[0]!)}}}]},"finish_reason":null}]}`,
   // Subsequent fragments carry only arguments under index 0.
-  `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"${ARGS_FRAGMENTS[1]}"}}]},"finish_reason":null}]}`,
-  `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"${ARGS_FRAGMENTS[2]}"}}]},"finish_reason":null}]}`,
-  `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"${ARGS_FRAGMENTS[3]}"}}]},"finish_reason":null}]}`,
+  `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":${j(ARGS_FRAGMENTS[1]!)}}}]},"finish_reason":null}]}`,
+  `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":${j(ARGS_FRAGMENTS[2]!)}}}]},"finish_reason":null}]}`,
+  `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":${j(ARGS_FRAGMENTS[3]!)}}}]},"finish_reason":null}]}`,
   // Terminal chunk: empty delta, finish_reason = tool_calls.
   '{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
   "[DONE]",
