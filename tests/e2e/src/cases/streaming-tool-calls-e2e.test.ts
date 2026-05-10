@@ -139,6 +139,12 @@ describe("streaming tool_calls e2e: arguments fragments concatenate to a valid J
       }
     });
 
+    // Baseline-isolate the readiness probe so the upstream wire-shape
+    // assertion below measures only the actual test call. Without
+    // this, the probe (which also goes through the streaming path)
+    // would inflate the request count.
+    const upstreamBaseline = upstream.receivedRequests.length;
+
     const stream = await client.chat.completions.create({
       model: "stream-tools-model",
       messages: [
@@ -200,10 +206,14 @@ describe("streaming tool_calls e2e: arguments fragments concatenate to a valid J
     expect(firstWithTool?.idDelta).toBe(TOOL_CALL_ID);
     expect(firstWithTool?.nameDelta).toBe(TOOL_NAME);
 
-    const subsequentWithTool = captured
-      .slice(captured.indexOf(firstWithTool!) + 1)
-      .filter((c) => c.argsDelta !== undefined);
-    for (const c of subsequentWithTool) {
+    // Sweep every chunk after the first tool_call delta — including
+    // empty-delta chunks like the terminal finish chunk — to catch a
+    // regression that re-emits id/name on a chunk that has no
+    // arguments fragment (which an args-filtered sweep would miss).
+    const afterFirst = captured.slice(
+      captured.indexOf(firstWithTool!) + 1,
+    );
+    for (const c of afterFirst) {
       expect(c.idDelta).toBeUndefined();
       expect(c.nameDelta).toBeUndefined();
     }
@@ -230,5 +240,29 @@ describe("streaming tool_calls e2e: arguments fragments concatenate to a valid J
     // tool_calls fragments arrive after finish_reason. Catches a
     // regression that flushed a stray fragment after the terminator.
     expect(captured[captured.length - 1]?.finish).toBe("tool_calls");
+
+    // (5) Upstream wire-shape assertion. The gateway must have sent
+    // exactly one request to the mock upstream, on the chat
+    // completions path, with the tools array intact, stream:true,
+    // and the ProviderKey's secret as the bearer token. A regression
+    // that stripped the tools array, dropped stream:true, or rewrote
+    // the auth header would still pass the response-shape gates
+    // above (because the mock replays canned events regardless) —
+    // this check is what closes that blind spot.
+    const sent = upstream.receivedRequests.slice(upstreamBaseline);
+    const completions = sent.filter(
+      (r) => r.path === "/v1/chat/completions",
+    );
+    expect(completions).toHaveLength(1);
+    const sentReq = completions[0]!;
+    expect(sentReq.method).toBe("POST");
+    expect(sentReq.headers.authorization).toBe("Bearer sk-mock");
+    const sentBody = JSON.parse(sentReq.body);
+    expect(sentBody.stream).toBe(true);
+    expect(sentBody.model).toBe("gpt-4o-mini");
+    expect(Array.isArray(sentBody.tools)).toBe(true);
+    expect(sentBody.tools).toHaveLength(1);
+    expect(sentBody.tools[0]?.type).toBe("function");
+    expect(sentBody.tools[0]?.function?.name).toBe(TOOL_NAME);
   }, 60_000);
 });
