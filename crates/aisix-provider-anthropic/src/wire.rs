@@ -42,33 +42,92 @@ pub(crate) struct AnthropicRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
     pub stream: bool,
+    /// Tools spec translated from the caller's OpenAI-shape `tools`
+    /// (when present in `extra`). The gateway emits Anthropic's
+    /// shape per <https://docs.anthropic.com/en/api/messages>:
+    /// `{name, description, input_schema}`. `None` when the caller
+    /// didn't request tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<serde_json::Value>>,
+    /// `tool_choice` translated from OpenAI's shape per
+    /// <https://platform.openai.com/docs/api-reference/chat/create#chat-create-tool_choice>
+    /// to Anthropic's per
+    /// <https://docs.anthropic.com/en/api/messages#parameter-tool_choice>:
+    ///   "auto"|"none"|"required"           → `{type:<same>}` ("required" → "any")
+    ///   {type:"function",function:{name}}  → `{type:"tool", name}`
+    /// Forwarding the OpenAI shape verbatim would 400 the upstream.
+    /// `None` when the caller didn't set tool_choice (and we strip
+    /// it from `extra` to avoid double-emit / shape mismatch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
+    /// Caller's other extra fields (excluding `tools`, which is
+    /// translated above). Anthropic-incompatible OpenAI-only fields
+    /// here would cause a 400 upstream — operators are expected to
+    /// configure their gateway client to send shape-appropriate
+    /// extras. Trade-off: forward-compatibility with new Anthropic
+    /// fields > strict filtering.
     #[serde(flatten)]
-    pub extra: &'a serde_json::Map<String, serde_json::Value>,
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct AnthropicMessage<'a> {
     pub role: &'a str,
-    pub content: Vec<AnthropicTextBlock<'a>>,
+    /// Polymorphic content blocks — text and `tool_result` blocks
+    /// emit different shapes per
+    /// <https://docs.anthropic.com/en/api/messages>. Stored as
+    /// owned `Value` so OpenAI `Role::Tool` messages can be
+    /// translated into Anthropic `{type:"tool_result", tool_use_id,
+    /// content}` without lifetime gymnastics.
+    pub content: Vec<serde_json::Value>,
+    #[serde(skip)]
+    _lifetime: std::marker::PhantomData<&'a ()>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct AnthropicTextBlock<'a> {
-    #[serde(rename = "type")]
-    pub kind: &'static str,
-    pub text: &'a str,
+impl<'a> AnthropicMessage<'a> {
+    /// Single-text-block message (the common case for
+    /// system/user/assistant turns without tool use).
+    pub(crate) fn text(role: &'a str, text: &'a str) -> Self {
+        Self {
+            role,
+            content: vec![serde_json::json!({"type": "text", "text": text})],
+            _lifetime: std::marker::PhantomData,
+        }
+    }
+
+    /// Anthropic tool_result block per
+    /// <https://docs.anthropic.com/en/api/messages#example-of-tool-use>.
+    /// Translates the OpenAI `{role:"tool", tool_call_id, content}`
+    /// turn so agent-loop round-trips work — without this, the
+    /// caller's tool-result reply 400s at the Anthropic upstream.
+    pub(crate) fn tool_result(tool_use_id: &str, content: &str) -> Self {
+        Self {
+            role: "user",
+            content: vec![serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": content,
+            })],
+            _lifetime: std::marker::PhantomData,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum TranslateError {
-    #[error("anthropic does not support role {role:?}")]
-    UnsupportedRole { role: &'static str },
+    #[error("tool message missing tool_call_id field")]
+    MissingToolCallId,
 }
 
 /// Split the gateway's flat ChatFormat into Anthropic's (system, messages)
 /// shape. Consecutive system messages at the head are concatenated with
 /// a blank line, matching how users typically compose multi-paragraph
 /// system prompts in the OpenAI format.
+///
+/// Role::Tool turns translate to Anthropic's `{role:"user", content:
+/// [{type:"tool_result", tool_use_id, content}]}` shape per
+/// <https://docs.anthropic.com/en/api/messages> so agent-loop turn 2
+/// (caller sends the tool's output back to the model) round-trips.
 pub(crate) fn split_system<'a>(
     req: &'a ChatFormat,
 ) -> Result<(Option<String>, Vec<AnthropicMessage<'a>>), TranslateError> {
@@ -83,38 +142,27 @@ pub(crate) fn split_system<'a>(
                     // System messages interleaved with user/assistant
                     // turns don't map cleanly; append as a user turn to
                     // preserve semantics without silently dropping them.
-                    messages.push(AnthropicMessage {
-                        role: "user",
-                        content: vec![AnthropicTextBlock {
-                            kind: "text",
-                            text: &m.content,
-                        }],
-                    });
+                    messages.push(AnthropicMessage::text("user", &m.content));
                 } else {
                     system_parts.push(&m.content);
                 }
             }
             Role::User => {
                 seen_non_system = true;
-                messages.push(AnthropicMessage {
-                    role: "user",
-                    content: vec![AnthropicTextBlock {
-                        kind: "text",
-                        text: &m.content,
-                    }],
-                });
+                messages.push(AnthropicMessage::text("user", &m.content));
             }
             Role::Assistant => {
                 seen_non_system = true;
-                messages.push(AnthropicMessage {
-                    role: "assistant",
-                    content: vec![AnthropicTextBlock {
-                        kind: "text",
-                        text: &m.content,
-                    }],
-                });
+                messages.push(AnthropicMessage::text("assistant", &m.content));
             }
-            Role::Tool => return Err(TranslateError::UnsupportedRole { role: "tool" }),
+            Role::Tool => {
+                seen_non_system = true;
+                let tool_use_id = m
+                    .tool_call_id
+                    .as_deref()
+                    .ok_or(TranslateError::MissingToolCallId)?;
+                messages.push(AnthropicMessage::tool_result(tool_use_id, &m.content));
+            }
         }
     }
 
@@ -133,6 +181,19 @@ pub(crate) fn build_request<'a>(
     messages: Vec<AnthropicMessage<'a>>,
     stream: bool,
 ) -> AnthropicRequest<'a> {
+    // Pull `tools` and `tool_choice` out of the caller's extras and
+    // translate to Anthropic shape; everything else passes through
+    // verbatim. Forwarding the OpenAI tool_choice shape would 400
+    // upstream — the field is removed from `extra` even when the
+    // translation returns None (e.g. unrecognised value), to avoid
+    // a shape-mismatch double-emit.
+    let mut extras = req.extra.clone();
+    let tools = extras
+        .remove("tools")
+        .and_then(translate_openai_tools_to_anthropic);
+    let tool_choice = extras
+        .remove("tool_choice")
+        .and_then(translate_openai_tool_choice_to_anthropic);
     AnthropicRequest {
         model: upstream_model,
         messages,
@@ -141,7 +202,95 @@ pub(crate) fn build_request<'a>(
         temperature: req.temperature,
         top_p: req.top_p,
         stream,
-        extra: &req.extra,
+        tools,
+        tool_choice,
+        extra: extras,
+    }
+}
+
+/// Translate the caller's OpenAI-shape `tools` array into
+/// Anthropic's tools-spec shape on the outbound axis. Field mapping
+/// per <https://platform.openai.com/docs/api-reference/chat/create#chat-create-tools>
+/// and <https://docs.anthropic.com/en/api/messages#parameter-tools>:
+///
+///   OpenAI                                    Anthropic
+///   {type: "function",                        {name,
+///    function: {name, description,             description,
+///               parameters}}                   input_schema}
+///
+/// Only `type: "function"` tools translate today; OpenAI's other
+/// tool kinds (`code_interpreter`, `file_search`, …) have no
+/// Anthropic equivalent and are dropped silently. Returns `None`
+/// when the input isn't an array or when no entries translated —
+/// keeping the field absent from the upstream wire shape so
+/// Anthropic doesn't reject for empty-tools.
+pub(crate) fn translate_openai_tools_to_anthropic(
+    tools: serde_json::Value,
+) -> Option<Vec<serde_json::Value>> {
+    let arr = tools.as_array()?;
+    let translated: Vec<serde_json::Value> = arr
+        .iter()
+        .filter_map(|t| {
+            // OpenAI: `{type: "function", function: {name, description,
+            // parameters}}`. Skip entries that don't fit this shape
+            // (defensive — non-function tools have no Anthropic mapping).
+            if t.get("type").and_then(|v| v.as_str()) != Some("function") {
+                return None;
+            }
+            let function = t.get("function")?.as_object()?;
+            let name = function.get("name")?.as_str()?;
+            let mut anthropic_tool = serde_json::Map::new();
+            anthropic_tool.insert("name".into(), name.into());
+            if let Some(desc) = function.get("description") {
+                anthropic_tool.insert("description".into(), desc.clone());
+            }
+            // OpenAI's `parameters` (JSON Schema) maps to Anthropic's
+            // `input_schema` verbatim — both are JSON Schema.
+            if let Some(params) = function.get("parameters") {
+                anthropic_tool.insert("input_schema".into(), params.clone());
+            }
+            Some(serde_json::Value::Object(anthropic_tool))
+        })
+        .collect();
+    if translated.is_empty() {
+        None
+    } else {
+        Some(translated)
+    }
+}
+
+/// Translate the caller's OpenAI-shape `tool_choice` to Anthropic's.
+///
+///   OpenAI                              Anthropic
+///   "auto"                          →   {"type":"auto"}
+///   "none"                          →   {"type":"none"}
+///   "required"                      →   {"type":"any"}    (Anthropic's name for "must call something")
+///   {type:"function",                   {"type":"tool",
+///    function:{name:"X"}}           →    "name":"X"}
+///
+/// Returns None for unrecognised shapes — caller's value is discarded
+/// rather than forwarded verbatim, since the OpenAI shape would 400
+/// the Anthropic upstream.
+pub(crate) fn translate_openai_tool_choice_to_anthropic(
+    v: serde_json::Value,
+) -> Option<serde_json::Value> {
+    match v {
+        serde_json::Value::String(s) => match s.as_str() {
+            "auto" | "none" => Some(serde_json::json!({"type": s})),
+            "required" => Some(serde_json::json!({"type": "any"})),
+            _ => None,
+        },
+        serde_json::Value::Object(o) => {
+            if o.get("type").and_then(|t| t.as_str()) != Some("function") {
+                return None;
+            }
+            let name = o
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())?;
+            Some(serde_json::json!({"type": "tool", "name": name}))
+        }
+        _ => None,
     }
 }
 
@@ -163,8 +312,25 @@ pub(crate) struct AnthropicResponse {
 pub(crate) enum AnthropicResponseBlock {
     #[serde(rename = "text")]
     Text { text: String },
-    /// Tool-use and other block types are ignored for PR #8 — a later
-    /// tools PR will surface them as typed `ChatChunk.tool_calls`.
+    /// Anthropic's `tool_use` content block. The model is asking to
+    /// invoke a tool: `id` is the call id, `name` is the tool name,
+    /// and `input` is a JSON object with the tool's arguments. Per
+    /// docs §6 outbound-axis table ("tool_use ↔ tool_calls"), the
+    /// gateway translates this into OpenAI's `tool_calls` shape on
+    /// the response so OpenAI-SDK callers (and every agent framework
+    /// built on that shape) work transparently against Anthropic
+    /// upstreams.
+    /// <https://docs.anthropic.com/en/api/messages#example-of-tool-use>
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        #[serde(default)]
+        input: serde_json::Value,
+    },
+    /// Future content-block types (e.g. `image` on output, `thinking`
+    /// for reasoning models). Not surfaced today; accepted so unknown
+    /// block types don't fail the whole response parse.
     #[serde(other)]
     Other,
 }
@@ -193,6 +359,53 @@ pub(crate) fn response_into_chat_response(raw: AnthropicResponse) -> ChatRespons
         .collect::<Vec<_>>()
         .join("");
 
+    // Translate Anthropic `tool_use` content blocks into OpenAI's
+    // `message.tool_calls` shape so OpenAI-SDK callers see a
+    // standard tool-call response. Field mapping per
+    // <https://docs.anthropic.com/en/api/messages> and
+    // <https://platform.openai.com/docs/api-reference/chat/object#chat-create-tool_calls>:
+    //
+    //   Anthropic                  OpenAI
+    //   id          (string)   →   tool_calls[].id
+    //   name        (string)   →   tool_calls[].function.name
+    //   input       (object)   →   tool_calls[].function.arguments  (JSON-encoded string)
+    //   (implicit)             →   tool_calls[].type: "function"
+    //
+    // `arguments` MUST be a JSON-encoded STRING in OpenAI's shape
+    // (not the parsed object) so SDK consumers round-trip via
+    // `JSON.parse(toolCall.function.arguments)`.
+    let tool_calls: Vec<serde_json::Value> = raw
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            AnthropicResponseBlock::ToolUse { id, name, input } => Some(serde_json::json!({
+                "id": id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    // OpenAI emits `"{}"` (empty object) for no-args
+                    // tool calls, not `"null"`. Normalise here so SDK
+                    // consumers doing `JSON.parse(args)` get an
+                    // object back even when Anthropic's `input`
+                    // field is absent / null.
+                    "arguments": match input {
+                        serde_json::Value::Null => "{}".to_string(),
+                        other => serde_json::to_string(other)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                },
+            })),
+            _ => None,
+        })
+        .collect();
+    let mut extra = serde_json::Map::new();
+    if !tool_calls.is_empty() {
+        extra.insert(
+            "tool_calls".to_string(),
+            serde_json::Value::Array(tool_calls),
+        );
+    }
+
     let usage = raw
         .usage
         .map(|u| UsageStats {
@@ -217,7 +430,7 @@ pub(crate) fn response_into_chat_response(raw: AnthropicResponse) -> ChatRespons
             content_blocks: None,
             name: None,
             tool_call_id: None,
-            extra: serde_json::Map::new(),
+            extra,
         },
         finish_reason: map_stop_reason(raw.stop_reason.as_deref()),
         usage,
@@ -785,7 +998,11 @@ mod tests {
     }
 
     #[test]
-    fn split_system_rejects_tool_role() {
+    fn split_system_rejects_tool_role_without_tool_call_id() {
+        // Tool turn must carry a tool_call_id (the OpenAI shape
+        // pairs tool_calls[i].id with the next turn's tool_call_id).
+        // Without one, we can't construct Anthropic's tool_result
+        // block — error rather than silently dropping the turn.
         let req = ChatFormat::new(
             "claude",
             vec![ChatMessage {
@@ -799,8 +1016,39 @@ mod tests {
         );
         assert!(matches!(
             split_system(&req),
-            Err(TranslateError::UnsupportedRole { role: "tool" })
+            Err(TranslateError::MissingToolCallId)
         ));
+    }
+
+    #[test]
+    fn split_system_translates_tool_role_to_anthropic_tool_result() {
+        // Agent-loop turn 2: caller sends back the tool's output via
+        // {role:"tool", tool_call_id, content}; gateway must
+        // translate to Anthropic's
+        // {role:"user", content:[{type:"tool_result", tool_use_id, content}]}.
+        let req = ChatFormat::new(
+            "claude",
+            vec![
+                ChatMessage::user("What's the weather in SF?"),
+                // (skipping the assistant turn for brevity in test setup)
+                ChatMessage {
+                    role: Role::Tool,
+                    content: "72F, sunny".into(),
+                    content_blocks: None,
+                    name: None,
+                    tool_call_id: Some("toolu_abc".into()),
+                    extra: serde_json::Map::new(),
+                },
+            ],
+        );
+        let (_system, msgs) = split_system(&req).unwrap();
+        assert_eq!(msgs.len(), 2);
+        // Tool turn became a user turn with a tool_result block.
+        assert_eq!(msgs[1].role, "user");
+        assert_eq!(msgs[1].content.len(), 1);
+        assert_eq!(msgs[1].content[0]["type"], "tool_result");
+        assert_eq!(msgs[1].content[0]["tool_use_id"], "toolu_abc");
+        assert_eq!(msgs[1].content[0]["content"], "72F, sunny");
     }
 
     #[test]
@@ -817,6 +1065,214 @@ mod tests {
         let (_system, messages) = split_system(&req).unwrap();
         let built = build_request(&req, "claude-sonnet-4-5", None, messages, false);
         assert_eq!(built.max_tokens, 256);
+    }
+
+    #[test]
+    fn tool_use_block_translates_to_openai_tool_calls_in_extra() {
+        // Anthropic Messages response with a tool_use content block
+        // (the model decided to call a tool) — verbatim shape from
+        // <https://docs.anthropic.com/en/api/messages#example-of-tool-use>.
+        let body = r#"{
+            "id": "msg_tool_01",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_abc",
+                    "name": "get_weather",
+                    "input": {"location": "San Francisco, CA", "unit": "celsius"}
+                }
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 12, "output_tokens": 8}
+        }"#;
+        let raw: AnthropicResponse = serde_json::from_str(body).unwrap();
+        let out = response_into_chat_response(raw);
+
+        // stop_reason "tool_use" → finish_reason ToolCalls.
+        assert_eq!(out.finish_reason, FinishReason::ToolCalls);
+        // Text content is empty when only tool_use blocks were
+        // emitted (no text blocks present).
+        assert_eq!(out.message.content, "");
+
+        // tool_calls translation lives in `message.extra` so the
+        // proxy renderer flattens it onto the wire as a top-level
+        // OpenAI-shape field.
+        let tool_calls = out
+            .message
+            .extra
+            .get("tool_calls")
+            .expect("tool_calls populated in extra")
+            .as_array()
+            .expect("tool_calls is an array");
+        assert_eq!(tool_calls.len(), 1);
+        let tc = &tool_calls[0];
+        assert_eq!(tc["id"], "toolu_abc");
+        assert_eq!(tc["type"], "function");
+        assert_eq!(tc["function"]["name"], "get_weather");
+        // OpenAI's `arguments` is a JSON-encoded STRING, not the
+        // parsed object — SDK consumers `JSON.parse` it.
+        let args_str = tc["function"]["arguments"]
+            .as_str()
+            .expect("arguments is a string");
+        let args: serde_json::Value = serde_json::from_str(args_str).unwrap();
+        assert_eq!(args["location"], "San Francisco, CA");
+        assert_eq!(args["unit"], "celsius");
+    }
+
+    #[test]
+    fn mixed_text_and_tool_use_blocks_both_surface() {
+        // The model can emit text BEFORE invoking a tool. Both must
+        // reach the OpenAI-SDK caller: text → message.content,
+        // tool_use → message.extra["tool_calls"].
+        let body = r#"{
+            "id": "msg_mixed_01",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [
+                {"type": "text", "text": "Let me check the weather."},
+                {"type": "tool_use", "id": "toolu_x", "name": "get_weather",
+                 "input": {"location": "NYC"}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 5, "output_tokens": 10}
+        }"#;
+        let raw: AnthropicResponse = serde_json::from_str(body).unwrap();
+        let out = response_into_chat_response(raw);
+        assert_eq!(out.message.content, "Let me check the weather.");
+        assert!(out.message.extra.get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn parallel_tool_use_blocks_emit_array_in_order() {
+        // Anthropic supports parallel tool calls — multiple tool_use
+        // blocks in one response. Each must produce a tool_calls
+        // entry, in the same order as the upstream emitted them.
+        let body = r#"{
+            "id": "msg_parallel_01",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "get_weather",
+                 "input": {"location": "SF"}},
+                {"type": "tool_use", "id": "toolu_2", "name": "get_time",
+                 "input": {"timezone": "PST"}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 10, "output_tokens": 20}
+        }"#;
+        let raw: AnthropicResponse = serde_json::from_str(body).unwrap();
+        let out = response_into_chat_response(raw);
+        let tool_calls = out
+            .message
+            .extra
+            .get("tool_calls")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0]["id"], "toolu_1");
+        assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
+        assert_eq!(tool_calls[1]["id"], "toolu_2");
+        assert_eq!(tool_calls[1]["function"]["name"], "get_time");
+    }
+
+    #[test]
+    fn tool_use_with_no_input_emits_empty_object_arguments() {
+        // OpenAI emits `arguments: "{}"` for no-args tool calls, not
+        // `"null"`. SDK consumers do `JSON.parse(arguments)` — `null`
+        // yields a non-object, breaking idiomatic agent code.
+        let body = r#"{
+            "id": "msg_no_args",
+            "type": "message",
+            "role": "assistant",
+            "model": "c",
+            "content": [
+                {"type": "tool_use", "id": "tu", "name": "noop"}
+            ],
+            "stop_reason": "tool_use"
+        }"#;
+        let raw: AnthropicResponse = serde_json::from_str(body).unwrap();
+        let out = response_into_chat_response(raw);
+        let tc = &out.message.extra["tool_calls"][0];
+        assert_eq!(tc["function"]["arguments"], "{}");
+    }
+
+    #[test]
+    fn tool_choice_string_forms_translate_to_anthropic_object_shape() {
+        // OpenAI: "auto" | "none" | "required"
+        // Anthropic: {"type":"auto"} | {"type":"none"} | {"type":"any"}
+        assert_eq!(
+            translate_openai_tool_choice_to_anthropic(serde_json::json!("auto")),
+            Some(serde_json::json!({"type": "auto"})),
+        );
+        assert_eq!(
+            translate_openai_tool_choice_to_anthropic(serde_json::json!("none")),
+            Some(serde_json::json!({"type": "none"})),
+        );
+        // "required" → "any" (Anthropic's name for "must call something")
+        assert_eq!(
+            translate_openai_tool_choice_to_anthropic(serde_json::json!("required")),
+            Some(serde_json::json!({"type": "any"})),
+        );
+    }
+
+    #[test]
+    fn tool_choice_specific_function_translates_to_anthropic_tool() {
+        // OpenAI: {type:"function", function:{name:"X"}}
+        // Anthropic: {type:"tool", name:"X"}
+        let openai = serde_json::json!({
+            "type": "function",
+            "function": {"name": "get_weather"}
+        });
+        assert_eq!(
+            translate_openai_tool_choice_to_anthropic(openai),
+            Some(serde_json::json!({"type": "tool", "name": "get_weather"})),
+        );
+    }
+
+    #[test]
+    fn tool_choice_unrecognised_shape_drops_to_none() {
+        // Strip the field rather than forwarding an OpenAI shape
+        // Anthropic doesn't recognise.
+        assert_eq!(
+            translate_openai_tool_choice_to_anthropic(serde_json::json!("invalid_form")),
+            None,
+        );
+        assert_eq!(
+            translate_openai_tool_choice_to_anthropic(serde_json::json!(42)),
+            None,
+        );
+    }
+
+    #[test]
+    fn build_request_strips_tool_choice_from_extra() {
+        // Even when the value is unrecognised, tool_choice MUST NOT
+        // leak into `extra` — forwarding the OpenAI shape would 400
+        // the upstream.
+        let req = ChatFormat {
+            extra: {
+                let mut m = serde_json::Map::new();
+                m.insert("tool_choice".to_string(), serde_json::json!("auto"));
+                m.insert("custom_field".to_string(), serde_json::json!("kept"));
+                m
+            },
+            ..ChatFormat::new("c", vec![ChatMessage::user("hi")])
+        };
+        let (_system, messages) = split_system(&req).unwrap();
+        let built = build_request(&req, "c-name", None, messages, false);
+        // tool_choice translated and on the typed field.
+        assert_eq!(built.tool_choice, Some(serde_json::json!({"type": "auto"})));
+        // tool_choice removed from `extra`; other fields preserved.
+        assert!(!built.extra.contains_key("tool_choice"));
+        assert_eq!(
+            built.extra.get("custom_field"),
+            Some(&serde_json::json!("kept"))
+        );
     }
 
     #[test]
