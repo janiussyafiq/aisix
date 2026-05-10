@@ -80,7 +80,31 @@ describe("streaming tool_calls e2e: arguments fragments concatenate to a valid J
     etcdReachable = await new EtcdClient().ping();
     if (!etcdReachable) return;
 
-    upstream = await startOpenAiUpstream({ streamEvents: SSE_EVENTS });
+    // Configure both stream and non-stream responses on the same mock:
+    // the readiness probe goes through the non-stream path (fast,
+    // deterministic), and the actual test call asks for stream:true
+    // so it consumes the streamEvents above.
+    upstream = await startOpenAiUpstream({
+      streamEvents: SSE_EVENTS,
+      nonStreamBody: {
+        id: "chatcmpl-stream-tools-probe",
+        object: "chat.completion",
+        created: 0,
+        model: "gpt-4o-mini",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "probe ok" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 1,
+          completion_tokens: 1,
+          total_tokens: 2,
+        },
+      },
+    });
 
     app = await spawnApp();
     admin = new AdminClient(app.adminUrl, app.adminKey);
@@ -119,21 +143,22 @@ describe("streaming tool_calls e2e: arguments fragments concatenate to a valid J
       maxRetries: 0,
     });
 
-    // Snapshot propagation — drive the streaming path itself so the
-    // probe asserts on the same code path the test uses. A non-
-    // streaming probe could pass while the streaming dispatcher
-    // is still missing the Model.
+    // Snapshot propagation — non-streaming probe. Readiness in this
+    // suite means Model + ProviderKey + ApiKey are all visible to
+    // the dispatcher; both paths share that lookup. A stream-mode
+    // probe against the canned tool_call SSE was racing the 10s
+    // waitConfigPropagation budget on slow runners (consuming +
+    // breaking SSE iteration is slower than a single non-stream
+    // round-trip). The test call below still drives the real
+    // streaming dispatcher, which is what the contract assertions
+    // need.
     await waitConfigPropagation(async () => {
       try {
         const probe = await client.chat.completions.create({
           model: "stream-tools-model",
           messages: [{ role: "user", content: "ready-probe" }],
-          stream: true,
         });
-        for await (const _chunk of probe) {
-          break;
-        }
-        return true;
+        return probe.choices.length > 0;
       } catch {
         return false;
       }
