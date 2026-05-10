@@ -178,5 +178,34 @@ describe("body-limit 413 e2e: oversized JSON rejected, undersized accepted", () 
     );
     expect(undersizedRes.status).toBe(200);
     await undersizedRes.text();
+
+    // (3) Limit applies to /v1/embeddings too. axum's
+    // `DefaultBodyLimit` is per-extractor, not global, so a
+    // regression that wired the limit only on the chat handler
+    // (or used a different extractor for embeddings) would let
+    // an oversized embeddings request through. Pin the
+    // cross-endpoint uniformity with one parallel oversized
+    // probe — only assert the 413, not undersized parity (chat
+    // covers that already).
+    const oversizedEmbeddingsBody = JSON.stringify({
+      model: "body-limit-model",
+      input: "a".repeat(OVERSIZED_FILL_BYTES),
+    });
+    expect(
+      Buffer.byteLength(oversizedEmbeddingsBody, "utf8"),
+    ).toBeGreaterThan(LIMIT_BYTES);
+
+    const embeddingsBaseline = upstream.receivedRequests.length;
+    const embeddingsRes = await fetch(
+      `${app.proxyUrl}/v1/embeddings`,
+      {
+        method: "POST",
+        headers,
+        body: oversizedEmbeddingsBody,
+      },
+    );
+    expect(embeddingsRes.status).toBe(413);
+    await embeddingsRes.text();
+    expect(upstream.receivedRequests.length).toBe(embeddingsBaseline);
   }, 60_000);
 });
