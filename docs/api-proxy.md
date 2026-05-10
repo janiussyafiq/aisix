@@ -13,10 +13,11 @@ caller traffic targets. It is served on the proxy listener (default
 ## 1. Authentication
 
 Every endpoint requires a caller API key, presented as either
-`Authorization: Bearer <key>` (preferred) or `Authorization: <key>`
-(bare-key fallback for legacy SDKs). The key must exist in the
-`apikeys` table of the current snapshot. See
-[architecture.md §3](./architecture.md#3-configuration-data-plane).
+`Authorization: Bearer <key>` (preferred) or `x-api-key: <key>`
+(fallback for clients that can't set `Authorization`). A bare
+`Authorization: <key>` without the `Bearer` scheme is rejected.
+The key must exist in the `apikeys` table of the current snapshot.
+See [architecture.md §3](./architecture.md#3-configuration-data-plane).
 
 ```http
 Authorization: Bearer sk-aisix-…
@@ -34,40 +35,54 @@ Errors follow the OpenAI shape so SDK error handlers light up:
 {
   "error": {
     "message": "model 'mygpt' not found",
-    "type": "model_not_found",
-    "param": null,
-    "code": null
+    "type": "model_not_found"
   }
 }
 ```
 
-| Status | `type` | When |
+The `param` and `code` fields are present on the wire only when set —
+unset values are omitted from the envelope.
+
+| Status | `type` | `code` | When |
+|---|---|---|---|
+| 400 | `invalid_request_error` | — | Malformed body, missing `model`, etc. |
+| 401 | `invalid_api_key` | — | Missing, malformed, or unknown bearer/`x-api-key` |
+| 403 | `permission_denied` | — | Key valid but Model not in `allowed_models` |
+| 404 | `model_not_found` | — | `req.model` does not resolve in the snapshot |
+| 413 | (axum default) | — | Body exceeds axum's built-in `Json<…>` extractor limit (2 MiB). The `proxy.request_body_limit_bytes` config field is currently unused — see [#193](https://github.com/api7/ai-gateway/issues/193) for the wiring follow-up. |
+| 422 | `content_filter` | — | Guardrail rejected request or response content |
+| 429 | `rate_limit_exceeded` | — | RPM/TPM/concurrency cap engaged (all three quotas surface here — the gateway does not split concurrency into a separate code) |
+| 429 | `billing_error` | `budget_exceeded` | Per-key USD budget exhausted |
+| 502 | (per-bridge) | — | Upstream returned 5xx or invalid wire format; `type` comes from the bridge — see [§6](#6-provider-specific-notes) |
+| 503 | `provider_unavailable` | — | No bridge registered for the resolved Model's provider |
+| 504 | `timeout` | — | Upstream call exceeded its deadline. Surfaced by `BridgeError::Timeout` and mapped through the bridge's `error_type()`. |
+
+Rate-limit rejections carry a `Retry-After: <seconds>` header. Budget
+rejections do not — the operator is the one who lifts the cap, so
+there is no deterministic retry interval to advertise.
+
+The `code` field is populated only where listed above; otherwise it
+is omitted from the envelope.
+
+## 3. Response headers
+
+Header coverage today is uneven across endpoints — converging on a
+single canonical request-id header is tracked as a follow-up code
+change.
+
+| Header | Meaning | Where emitted today |
 |---|---|---|
-| 400 | `invalid_request_error` | Malformed body, missing `model`, etc. |
-| 401 | `authentication_error` | Missing or unknown bearer key |
-| 403 | `model_access_forbidden` | Key valid but Model not in `allowed_models` |
-| 404 | `model_not_found` | `req.model` does not resolve in the snapshot |
-| 413 | `request_too_large` | Body exceeds `proxy.request_body_limit_bytes` (default 10 MB) |
-| 422 | `invalid_request_error` | Schema-valid JSON but semantically wrong (e.g. empty `messages`) |
-| 429 | `rate_limit_exceeded` / `budget_exceeded` | RPM/TPM/concurrency/budget cap |
-| 502 | `provider_error` | Upstream returned 5xx or invalid wire format |
-| 503 | `service_unavailable` | No bridge registered for the resolved Model's provider |
-| 504 | `request_timeout` | Upstream exceeded `Model.timeout` ms |
+| `x-aisix-request-id` | Server-issued request UUID. Echo this when filing support tickets. | `/v1/messages`, `/v1/responses`, `/v1/rerank`, `/v1/audio/*`, `/passthrough/*` |
+| `x-aisix-call-id` | Same intent as `x-aisix-request-id`; will be retired in favour of it. | `/v1/chat/completions` only |
+| `x-aisix-cache` | `hit` if the response came from cache, `miss` otherwise. Absent for streaming responses. | every endpoint that goes through the cache layer |
+| `x-ratelimit-limit-{requests,tokens,concurrent}` | Configured caps. | every endpoint that ran the rate-limit middleware |
+| `x-ratelimit-remaining-{requests,tokens,concurrent}` | Live counters at end of request. | same as above |
+| `x-ratelimit-reset-{requests,tokens}` | Unix timestamp when the window resets. | same as above |
+| `Retry-After` | On 429 rate-limit responses only. | proxy 429 path |
 
-For rate-limit and budget errors the response also carries
-`Retry-After: <seconds>` (rate limit) or `Retry-After-Seconds-Header`
-(budget) headers when known.
-
-## 3. Response headers (every endpoint)
-
-| Header | Meaning |
-|---|---|
-| `x-aisix-call-id` | Server-issued request UUID. Echo this when filing support tickets. |
-| `x-aisix-cache` | `hit` if the response came from cache, `miss` otherwise. Absent for streaming responses. |
-| `x-ratelimit-limit-{requests,tokens,concurrent}` | Configured caps. |
-| `x-ratelimit-remaining-{requests,tokens,concurrent}` | Live counters at end of request. |
-| `x-ratelimit-reset-{requests,tokens}` | Unix timestamp when the window resets. |
-| `Retry-After` | On 429 rate-limit responses only. |
+`/v1/completions`, `/v1/embeddings`, `/v1/images/generations`, and
+`/v1/models` do not currently emit any request-id header. Treat the
+absence as a known gap rather than a contract.
 
 ## 4. Endpoints
 
@@ -110,22 +125,22 @@ curl -X POST http://localhost:3000/v1/chat/completions \
 **Streaming** — set `"stream": true`. The response is `text/event-stream`
 with one `data: {chunk-json}` per delta and a final `data: [DONE]`.
 Set `"stream_options": {"include_usage": true}` to receive a final
-`usage` chunk before `[DONE]`. aisix injects this automatically when
-the request omits the field, so client SDKs get accurate token totals
-even in streaming mode.
+`usage` chunk before `[DONE]`. Callers that need accurate token
+totals on streamed completions should set this explicitly — the
+gateway forwards the request body to the upstream verbatim and does
+not auto-inject the field.
 
 **Tool calls**, **JSON mode**, **vision content blocks**, and
 **function-style tool definitions** all pass through unchanged.
 
 **Caching** — non-streaming requests with the same fingerprint
-(model + messages + temperature + top_p + max_tokens) hit the cache.
-Override per request with `Cache-Control` header values:
-
-| Header value | Effect |
-|---|---|
-| `no-store` | Skip cache lookup AND skip storing the response |
-| `no-cache` | Skip lookup but still store on success |
-| `s-maxage=N` | Override TTL for this entry |
+(model + messages + temperature + top_p + max_tokens, plus the
+`tools` / `tool_choice` / `response_format` / `seed` / `stop` /
+`presence_penalty` / `frequency_penalty` request fields when set)
+hit the cache when a `CachePolicy` resource matches. Streaming
+responses are never cached. Cache behavior is configured operator-
+side via `/admin/v1/cache_policies`; there is no per-request
+`Cache-Control` override today.
 
 ### 4.3 `POST /v1/completions`
 
@@ -212,7 +227,9 @@ possible:
 
 - One `data:` line per chunk, terminated by `\n\n`.
 - A keepalive comment (`: ping`) is emitted every 15 s of idle time
-  to prevent intermediate proxies from dropping the connection.
+  on `/v1/chat/completions` streams to prevent intermediate proxies
+  from dropping the connection. `/v1/messages` and `/v1/responses`
+  do not currently emit keepalives.
 - The terminal `data: [DONE]` is always sent on a clean upstream
   finish, even if the upstream omitted it.
 - If the upstream stream terminates abnormally, aisix sends a final
@@ -224,8 +241,8 @@ possible:
 
 | Provider | Native endpoint | OpenAI-translated endpoint | Notes |
 |---|---|---|---|
-| OpenAI | `/v1/chat/completions`, `/v1/responses` | (no translation needed) | aisix auto-injects `stream_options.include_usage = true` |
-| Anthropic | `/v1/messages` | `/v1/chat/completions` (full translation) | The Hub maps content blocks ↔ messages, tool_use ↔ tool_calls, system extraction, cache_control passthrough, stop_reason normalisation |
+| OpenAI | `/v1/chat/completions`, `/v1/responses` | (no translation needed) | Request body forwarded verbatim |
+| Anthropic | `/v1/messages` | `/v1/chat/completions` (text content blocks) | Anthropic→Anthropic is a byte-for-byte passthrough that preserves `cache_control`, thinking, image, and tool_use blocks. Cross-provider translation today covers **text content blocks only** — tool_use, image, and thinking blocks are silently dropped on the inbound parse and are scheduled for a follow-up. See §4.5. |
 | Gemini | `/v1/chat/completions` (OpenAI-compat endpoint) | (same) | Uses Gemini's OpenAI-compatible base URL with `x-goog-api-key` auth |
 | DeepSeek | `/v1/chat/completions` (OpenAI-compat endpoint) | (same) | Uses Bearer auth, OpenAI-compatible payloads |
 
@@ -307,6 +324,7 @@ in parallel for at least one release.
 - [`architecture.md`](./architecture.md) — how the data and request
   paths fit together internally.
 - [`api-admin.md`](./api-admin.md) — operator CRUD surface.
-- The auto-generated OpenAPI spec lives at `/openapi` on the admin
-  listener. It is the canonical machine-readable contract; this
-  document is the human-readable companion.
+- The auto-generated OpenAPI spec lives at `/admin/openapi.json` on
+  the admin listener (with a Scalar UI at `/admin/openapi-scalar`).
+  It is the canonical machine-readable contract; this document is
+  the human-readable companion.
