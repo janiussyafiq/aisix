@@ -741,7 +741,8 @@ mod tests {
         // List sees exactly one.
         let app = build_router(state.clone());
         let resp = run(app, auth_req("GET", "/admin/v1/apikeys", None)).await;
-        assert_eq!(body_json(resp).await.as_array().unwrap().len(), 1);
+        let listed = body_json(resp).await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
 
         // Delete.
         let app = build_router(state);
@@ -751,6 +752,40 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn create_apikey_rejects_unknown_field() {
+        let app = build_router(build_state());
+        let resp = run(
+            app,
+            auth_req(
+                "POST",
+                "/admin/v1/apikeys",
+                Some(json!({
+                    "key_hash": aisix_core::ApiKey::hash_bearer("sk-budget"),
+                    "allowed_models": ["*"],
+                    "max_budget_usd": 500.0
+                })),
+            ),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = body_json(resp).await;
+        assert!(v["error_msg"].as_str().unwrap().contains("unknown field"));
+    }
+
+    #[tokio::test]
+    async fn openapi_apikey_schema_excludes_max_budget_usd() {
+        let resp = openapi::openapi_json().await;
+        let bytes = to_bytes(resp.into_body(), 65536).await.unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("OPENAPI_JSON must parse");
+        let props = &parsed["components"]["schemas"]["ApiKey"]["properties"];
+        assert!(props["key_hash"].is_object());
+        assert!(props["allowed_models"].is_object());
+        assert!(props["rate_limit"].is_object());
+        assert!(props.get("max_budget_usd").is_none());
     }
 
     // ──────────────────── Guardrails CRUD ────────────────────

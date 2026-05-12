@@ -284,8 +284,7 @@ const OPENAPI_JSON: &str = r##"{
         "properties": {
           "key_hash":       {"type": "string", "description": "SHA-256 hex of the plaintext bearer. Lowercase.", "example": "91ed2dbc407561556f3e7be98ba0bd2a57986d6a868c482d867d19c6d40d201c"},
           "allowed_models": {"type": "array", "items": {"type": "string"}, "description": "Allowed Model display_names. `[\"*\"]` for all; `[]` denies everything."},
-          "rate_limit":     {"$ref": "#/components/schemas/RateLimit"},
-          "max_budget_usd": {"type": "number", "minimum": 0, "description": "Per-month USD spend cap. Absent = unlimited."}
+          "rate_limit":     {"$ref": "#/components/schemas/RateLimit"}
         }
       },
       "ApiKeyEntry": {
