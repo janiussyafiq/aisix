@@ -287,8 +287,9 @@ async fn multipart_dispatch(
         return Err(ProxyError::ModelForbidden(model_name.clone()));
     }
 
-    let model_rl = crate::quota::ModelRateLimit::from_model(&model_name, &model_entry.value);
-    let _reservation = crate::quota::enforce(state, auth, model_rl).await?;
+    let model_rl =
+        crate::quota::ModelRateLimit::from_model(&model_name, &model_entry.id, &model_entry.value);
+    let _reservation = crate::quota::enforce(state, auth, Some(&model_rl)).await?;
 
     let model = &model_entry.value;
     let provider = crate::dispatch::require_provider(model)?;
@@ -409,8 +410,9 @@ async fn speech_dispatch(
         return Err(ProxyError::ModelForbidden(model_name.clone()));
     }
 
-    let model_rl = crate::quota::ModelRateLimit::from_model(&model_name, &model_entry.value);
-    let _reservation = crate::quota::enforce(state, auth, model_rl).await?;
+    let model_rl =
+        crate::quota::ModelRateLimit::from_model(&model_name, &model_entry.id, &model_entry.value);
+    let _reservation = crate::quota::enforce(state, auth, Some(&model_rl)).await?;
 
     let model = &model_entry.value;
     let provider = crate::dispatch::require_provider(model)?;
