@@ -97,7 +97,58 @@ pub fn build_router(state: ProxyState) -> Router {
             state.clone(),
             enforce_request_body_limit,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            record_in_flight_request,
+        ))
         .with_state(state)
+}
+
+async fn record_in_flight_request(
+    State(state): State<ProxyState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let endpoint = request.uri().path().to_string();
+    let inbound_protocol = inbound_protocol_for_endpoint(&endpoint).to_string();
+    let _guard = InFlightGuard::new(state.metrics.clone(), endpoint, inbound_protocol);
+    next.run(request).await
+}
+
+fn inbound_protocol_for_endpoint(endpoint: &str) -> &'static str {
+    if endpoint == "/v1/messages" {
+        "anthropic"
+    } else {
+        "openai"
+    }
+}
+
+struct InFlightGuard {
+    metrics: std::sync::Arc<aisix_obs::Metrics>,
+    endpoint: String,
+    inbound_protocol: String,
+}
+
+impl InFlightGuard {
+    fn new(
+        metrics: std::sync::Arc<aisix_obs::Metrics>,
+        endpoint: String,
+        inbound_protocol: String,
+    ) -> Self {
+        metrics.increment_proxy_in_flight(&endpoint, &inbound_protocol);
+        Self {
+            metrics,
+            endpoint,
+            inbound_protocol,
+        }
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.metrics
+            .decrement_proxy_in_flight(&self.endpoint, &self.inbound_protocol);
+    }
 }
 
 /// Per RFC 9110 §15.5.14, a request body that exceeds the gateway's
