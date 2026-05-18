@@ -34,6 +34,7 @@ pub(crate) mod cooldown;
 mod dispatch;
 mod embeddings;
 mod error;
+mod error_translate;
 pub mod health;
 mod http_client;
 mod images;
@@ -723,6 +724,140 @@ mod tests {
         assert_eq!(v["error"]["type"], "upstream_error");
     }
 
+    /// Issue #322: when an OpenAI upstream returns a coded 4xx with the
+    /// standard `{error:{message,type,code,param}}` envelope, every
+    /// field reaches the customer verbatim. SDKs that switch on
+    /// `error.code` to decide retry strategy depend on this — flattening
+    /// to a generic `upstream_error` envelope silently downgrades their
+    /// retry intelligence.
+    #[tokio::test]
+    async fn upstream_openai_4xx_forwards_full_envelope_per_issue_322() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).set_body_raw(
+                br#"{"error":{"message":"upstream forced 429","type":"upstream_test_fixture","code":"forced_429","param":"model"}}"#.as_slice(),
+                "application/json",
+            ))
+            .mount(&upstream)
+            .await;
+
+        let hub = Arc::new(Hub::new());
+        hub.register(Provider::Openai, Arc::new(openai_test_bridge()));
+        let snap = seed_snapshot("my-gpt4", &["my-gpt4"], &upstream.uri());
+        let app = build_router(build_state(snap, hub));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("authorization", "Bearer sk-caller")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"my-gpt4","messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+        let resp = run(app, req).await;
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = to_bytes(resp.into_body(), 2048).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"]["message"], "upstream forced 429");
+        assert_eq!(v["error"]["type"], "upstream_test_fixture");
+        assert_eq!(v["error"]["code"], "forced_429");
+        assert_eq!(v["error"]["param"], "model");
+    }
+
+    /// Issue #322 fallback contract: when the upstream body is not a
+    /// recognisable JSON envelope (HTML error page, garbled text), the
+    /// gateway must NOT crash or surface raw bytes; it falls back to
+    /// the generic `upstream_error` envelope with the truncated body
+    /// as `message`. This pins the content-type guard.
+    #[tokio::test]
+    async fn upstream_4xx_non_json_body_falls_back_to_generic_envelope() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(
+                b"<html><body>403 Forbidden by WAF</body></html>".as_slice(),
+                "text/html",
+            ))
+            .mount(&upstream)
+            .await;
+
+        let hub = Arc::new(Hub::new());
+        hub.register(Provider::Openai, Arc::new(openai_test_bridge()));
+        let snap = seed_snapshot("my-gpt4", &["my-gpt4"], &upstream.uri());
+        let app = build_router(build_state(snap, hub));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("authorization", "Bearer sk-caller")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"my-gpt4","messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+        let resp = run(app, req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(resp.into_body(), 2048).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // Generic envelope: type=upstream_error, message contains the
+        // truncated raw body (no JSON parse attempted on text/html).
+        assert_eq!(v["error"]["type"], "upstream_error");
+        assert!(v["error"].get("code").is_none() || v["error"]["code"].is_null());
+    }
+
+    /// Issue #322 sanity check on the 5xx branch: upstream 5xx still
+    /// collapses to 502 with the generic envelope AND the upstream
+    /// `error.message` is suppressed. Engine names / shard ids / queue
+    /// depth routinely appear in upstream 5xx bodies (in this fixture:
+    /// "engine offline shard 47") — those are operator-internal and
+    /// must not bleed through to the customer envelope.
+    #[tokio::test]
+    async fn upstream_openai_5xx_with_json_envelope_collapses_and_redacts_message() {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(503).set_body_raw(
+                br#"{"error":{"message":"engine offline shard 47","type":"server_error","code":"engine_overloaded"}}"#.as_slice(),
+                "application/json",
+            ))
+            .mount(&upstream)
+            .await;
+
+        let hub = Arc::new(Hub::new());
+        hub.register(Provider::Openai, Arc::new(openai_test_bridge()));
+        let snap = seed_snapshot("my-gpt4", &["my-gpt4"], &upstream.uri());
+        let app = build_router(build_state(snap, hub));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("authorization", "Bearer sk-caller")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"my-gpt4","messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+        let resp = run(app, req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let bytes = to_bytes(resp.into_body(), 2048).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"]["type"], "upstream_error");
+        let msg = v["error"]["message"].as_str().unwrap();
+        assert!(
+            !msg.contains("engine offline") && !msg.contains("shard 47"),
+            "upstream 5xx `error.message` must NOT leak to customer; got: {msg:?}"
+        );
+        // Upstream `code` (engine_overloaded) must also not pass
+        // through on 5xx.
+        assert!(
+            v["error"].get("code").is_none() || v["error"]["code"].is_null(),
+            "upstream 5xx `error.code` must not pass through; got code={:?}",
+            v["error"]["code"]
+        );
+    }
+
     /// Cross-provider contract: Anthropic upstream 5xx → client sees an
     /// OpenAI-shape envelope `{error:{type:"upstream_error",...}}` with
     /// status 502 (collapsed per `BridgeError::http_status`, see
@@ -770,9 +905,13 @@ mod tests {
         assert!(v["error"]["message"].is_string());
     }
 
-    /// Cross-provider 4xx pass-through: Anthropic upstream 400 reaches
-    /// the client as 400 + OpenAI-shape envelope (status flows from
-    /// `BridgeError::UpstreamStatus.http_status()` 4xx branch).
+    /// Cross-provider 4xx translation: Anthropic upstream 400 reaches
+    /// the OpenAI-client side with the OpenAI-shape `error.type` /
+    /// `error.code` derived from Anthropic's `error.type` via the
+    /// translation table in [`crate::error_translate`]. Anthropic
+    /// `invalid_request_error` maps to OpenAI `invalid_request_error`
+    /// (taxonomy overlap — same token); other Anthropic types like
+    /// `rate_limit_error` map to distinct OpenAI tokens.
     #[tokio::test]
     async fn upstream_anthropic_400_passes_through_with_openai_envelope() {
         use aisix_provider_anthropic::AnthropicBridge;
@@ -780,8 +919,9 @@ mod tests {
         let upstream = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
-            .respond_with(ResponseTemplate::new(400).set_body_string(
-                r#"{"type":"error","error":{"type":"invalid_request_error","message":"bad input"}}"#,
+            .respond_with(ResponseTemplate::new(400).set_body_raw(
+                br#"{"type":"error","error":{"type":"invalid_request_error","message":"bad input"}}"#.as_slice(),
+                "application/json",
             ))
             .mount(&upstream)
             .await;
@@ -811,7 +951,60 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let v: serde_json::Value =
             serde_json::from_slice(&to_bytes(resp.into_body(), 1024).await.unwrap()).unwrap();
-        assert_eq!(v["error"]["type"], "upstream_error");
+        assert_eq!(v["error"]["type"], "invalid_request_error");
+        assert_eq!(v["error"]["message"], "bad input");
+        // Anthropic `invalid_request_error` doesn't derive an OpenAI
+        // string code — translation table emits `code: null`.
+        assert!(v["error"].get("code").is_none() || v["error"]["code"].is_null());
+    }
+
+    /// Issue #322 cross-wire contract: Anthropic upstream `rate_limit_error`
+    /// must translate to OpenAI `rate_limit_exceeded` (both as
+    /// `error.type` and `error.code`) so OpenAI SDK retry logic that
+    /// switches on `error.code` recognises the rate-limit failure
+    /// regardless of which upstream the gateway routed to.
+    #[tokio::test]
+    async fn upstream_anthropic_rate_limit_translates_to_openai_rate_limit_exceeded() {
+        use aisix_provider_anthropic::AnthropicBridge;
+
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(429).set_body_raw(
+                br#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#.as_slice(),
+                "application/json",
+            ))
+            .mount(&upstream)
+            .await;
+
+        let snap = AisixSnapshot::new();
+        snap.provider_keys
+            .insert(matrix_anthropic_pk(&upstream.uri()));
+        snap.models.insert(anthropic_model_entry("my-claude"));
+        snap.apikeys
+            .insert(apikey_entry("sk-caller", &["my-claude"]));
+        let hub = Arc::new(Hub::new());
+        hub.register(Provider::Anthropic, Arc::new(AnthropicBridge::new()));
+        let app = build_router(build_state(snap, hub));
+
+        let body = serde_json::json!({
+            "model": "my-claude",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("authorization", "Bearer sk-caller")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = run(app, req).await;
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let v: serde_json::Value =
+            serde_json::from_slice(&to_bytes(resp.into_body(), 1024).await.unwrap()).unwrap();
+        assert_eq!(v["error"]["type"], "rate_limit_exceeded");
+        assert_eq!(v["error"]["code"], "rate_limit_exceeded");
+        assert_eq!(v["error"]["message"], "slow down");
     }
 
     /// Garbage upstream body (200 + non-JSON) must surface as 502 with

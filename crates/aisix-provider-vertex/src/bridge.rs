@@ -262,10 +262,22 @@ where
 ///
 /// **Audit-aware:** Vertex error envelopes (`{"error": {"code":
 /// 403, "message": "Permission denied for project foo-bar-prod"}}`)
-/// leak operator project ids. We map to canned status-keyed phrases.
+/// leak operator project ids. The customer-visible `message` is a
+/// canned status-keyed phrase. We *do* read the upstream's
+/// `error.status` (a gRPC canonical code such as `"RESOURCE_EXHAUSTED"`)
+/// into [`UpstreamErrorView::kind`] so the envelope-translation layer
+/// can derive an OpenAI `code` — that token is a stable taxonomy
+/// label, not operator-internal data. [`UpstreamErrorView::message`]
+/// is intentionally left `None`.
 async fn map_http_error(status: StatusCode, resp: reqwest::Response) -> BridgeError {
     let retry_after = aisix_gateway::parse_retry_after(resp.headers());
-    let _ = resp.text().await; // drain body, discard content
+    let is_json = aisix_gateway::response_is_json(&resp);
+    let body =
+        aisix_gateway::read_body_capped(resp, aisix_gateway::MAX_UPSTREAM_ERROR_BODY_BYTES).await;
+    // Skip the serde parse on non-JSON bodies (HTML / text error pages
+    // from a fronting WAF or load balancer). Same guard as
+    // `capture_upstream_error_http`.
+    let kind = is_json.then(|| parse_vertex_error_status(&body)).flatten();
     let message = match status.as_u16() {
         401 | 403 => "upstream authentication failed".to_string(),
         404 => "upstream model or endpoint not found".to_string(),
@@ -273,7 +285,40 @@ async fn map_http_error(status: StatusCode, resp: reqwest::Response) -> BridgeEr
         429 => "upstream rate limited".to_string(),
         _ => format!("upstream returned {}", status.as_u16()),
     };
-    BridgeError::upstream_status_with_retry_after(status.as_u16(), message, retry_after)
+    let parsed = kind.as_ref().map(|_| {
+        Box::new(aisix_gateway::UpstreamErrorView {
+            kind: kind.clone(),
+            message: None,
+            code: None,
+            param: None,
+        })
+    });
+    BridgeError::UpstreamStatus {
+        status: status.as_u16(),
+        message,
+        parsed,
+        wire: aisix_gateway::UpstreamWire::Vertex,
+        retry_after,
+    }
+}
+
+/// Extract just the `error.status` field (the gRPC canonical code) from
+/// a Vertex error body. The body shape is
+/// `{"error": {"code": int, "message": "...", "status": "...", "details": [...]}}`
+/// per <https://cloud.google.com/apis/design/errors>. Returns `None`
+/// when the body is not JSON of that shape — we intentionally do not
+/// surface `error.message` (it embeds operator project ids).
+fn parse_vertex_error_status(body: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Outer {
+        error: Inner,
+    }
+    #[derive(serde::Deserialize)]
+    struct Inner {
+        status: Option<String>,
+    }
+    let outer: Outer = serde_json::from_slice(body).ok()?;
+    outer.error.status
 }
 
 #[async_trait]
@@ -1385,7 +1430,11 @@ mod tests {
         let err = bridge.chat(&req, &ctx).await.unwrap_err();
         match err {
             BridgeError::UpstreamStatus {
-                status, message, ..
+                status,
+                message,
+                wire,
+                parsed,
+                ..
             } => {
                 assert_eq!(status, 403);
                 assert!(
@@ -1393,6 +1442,102 @@ mod tests {
                         && !message.contains("Permission denied on project"),
                     "upstream body must not leak project id; got message={message:?}"
                 );
+                // Audit fix (PR #323 MEDIUM-2): pin the wire tag so a
+                // refactor that breaks the cross-wire translation
+                // pipeline fails this test loudly. parsed.message
+                // must stay None for operator-taxonomy redaction.
+                assert_eq!(wire, aisix_gateway::UpstreamWire::Vertex);
+                if let Some(view) = parsed {
+                    assert!(
+                        view.message.is_none(),
+                        "vertex must NOT surface upstream message (project ids leak); \
+                         got {:?}",
+                        view.message
+                    );
+                }
+            }
+            other => panic!("expected UpstreamStatus, got {other:?}"),
+        }
+    }
+
+    /// Copilot review (PR #323): non-JSON body (HTML error page from a
+    /// fronting load balancer) must NOT trigger serde parsing — the
+    /// bridge applies the same content-type guard as
+    /// `capture_upstream_error_http`.
+    #[tokio::test]
+    async fn chat_gemini_non_json_body_skips_envelope_parse() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(403).set_body_raw(
+                b"<html><body>403 Forbidden</body></html>".as_slice(),
+                "text/html",
+            ))
+            .mount(&server)
+            .await;
+
+        let bridge = VertexBridge::new().with_api_base_override(server.uri());
+        let ctx = BridgeContext::new(
+            "req-1",
+            sample_model_with("gemini-1.5-pro"),
+            sample_pk_with_secret(valid_secret_json()),
+        );
+        let req = ChatFormat::new("my-gemini", vec![ChatMessage::user("hi")]);
+        let err = bridge.chat(&req, &ctx).await.unwrap_err();
+        match err {
+            BridgeError::UpstreamStatus { parsed, .. } => {
+                assert!(
+                    parsed.is_none(),
+                    "non-JSON body must skip parser; got {parsed:?}"
+                );
+            }
+            other => panic!("expected UpstreamStatus, got {other:?}"),
+        }
+    }
+
+    /// Audit fix (PR #323 MEDIUM-2): structured-parse path — upstream
+    /// returns a Vertex envelope with `error.status` set; the bridge
+    /// must extract it as `parsed.kind` for the cross-wire translation
+    /// layer to derive an OpenAI `code`. `parsed.message` stays `None`
+    /// (operator project ids leak otherwise).
+    #[tokio::test]
+    async fn chat_gemini_429_populates_parsed_kind_from_grpc_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "error": {
+                    "code": 429,
+                    "message": "Quota exceeded for project my-secret-proj",
+                    "status": "RESOURCE_EXHAUSTED"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let bridge = VertexBridge::new().with_api_base_override(server.uri());
+        let ctx = BridgeContext::new(
+            "req-1",
+            sample_model_with("gemini-1.5-pro"),
+            sample_pk_with_secret(valid_secret_json()),
+        );
+        let req = ChatFormat::new("my-gemini", vec![ChatMessage::user("hi")]);
+        let err = bridge.chat(&req, &ctx).await.unwrap_err();
+        match err {
+            BridgeError::UpstreamStatus {
+                status,
+                message,
+                wire,
+                parsed,
+                ..
+            } => {
+                assert_eq!(status, 429);
+                assert_eq!(wire, aisix_gateway::UpstreamWire::Vertex);
+                assert!(
+                    !message.contains("my-secret-proj"),
+                    "must not leak project id; got {message:?}"
+                );
+                let parsed = parsed.expect("status field parsed into view");
+                assert_eq!(parsed.kind.as_deref(), Some("RESOURCE_EXHAUSTED"));
+                assert!(parsed.message.is_none());
             }
             other => panic!("expected UpstreamStatus, got {other:?}"),
         }

@@ -32,8 +32,13 @@ pub struct ErrorEnvelope {
 #[derive(Debug, Serialize, Clone)]
 pub struct ErrorBody {
     pub message: String,
+    /// `error.type` token. Was `&'static str` before #322 — widened to
+    /// owned `String` because the type can now reflect an upstream-
+    /// derived OpenAI taxonomy token (`rate_limit_exceeded`,
+    /// `insufficient_quota`, …) when the error_translate layer maps a
+    /// non-OpenAI upstream to OpenAI shape.
     #[serde(rename = "type")]
-    pub kind: &'static str,
+    pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub param: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,11 +46,11 @@ pub struct ErrorBody {
 }
 
 impl ErrorEnvelope {
-    pub fn new(message: impl Into<String>, kind: &'static str) -> Self {
+    pub fn new(message: impl Into<String>, kind: impl Into<String>) -> Self {
         Self {
             error: ErrorBody {
                 message: message.into(),
-                kind,
+                kind: kind.into(),
                 param: None,
                 code: None,
             },
@@ -155,12 +160,74 @@ impl ProxyError {
     }
 
     pub fn envelope(&self) -> ErrorEnvelope {
+        // Bridge-surface upstream errors get special handling: the
+        // bridge has best-effort-parsed the upstream envelope into a
+        // structured [`UpstreamErrorView`], and for same-wire 4xx
+        // (OpenAI upstream + OpenAI client) we forward the parsed
+        // fields directly instead of wrapping them inside the
+        // gateway's generic `upstream_error` envelope.
+        //
+        // 5xx and non-JSON bodies fall back to the generic envelope —
+        // upstream internal-server-error detail (engine names, queue
+        // depth, etc.) is operator-internal and must not bleed through.
+        // Cross-wire translation (Anthropic / Bedrock / Vertex / Azure
+        // → OpenAI shape) ships in a follow-up via `error_translate`.
+        if let ProxyError::Bridge(aisix_gateway::BridgeError::UpstreamStatus {
+            status,
+            message,
+            parsed,
+            wire,
+            ..
+        }) = self
+        {
+            return render_bridge_upstream_envelope(*status, message, parsed.as_deref(), *wire);
+        }
         let env = ErrorEnvelope::new(self.to_string(), self.kind());
         match self {
             ProxyError::BudgetExceeded(_) => env.with_code("budget_exceeded"),
             _ => env,
         }
     }
+}
+
+/// Build the customer-visible envelope for an upstream HTTP error.
+///
+/// **4xx**: delegate to [`crate::error_translate::render_openai_envelope`],
+/// which (a) passes OpenAI-wire fields verbatim, (b) translates
+/// Anthropic / Bedrock / Vertex / AzureOpenAI taxonomy via per-wire
+/// tables so the OpenAI-shape `error.type` and `error.code` carry the
+/// retry semantics SDKs depend on.
+///
+/// **5xx**: emit a canned `upstream returned {status}` message under
+/// `type: upstream_error`. Upstream 5xx bodies routinely embed
+/// operator-internal detail (engine names, shard ids, queue depth,
+/// ARNs in raw AWS messages) — surfacing them to the customer leaks
+/// internal taxonomy. The full upstream body remains in operator
+/// logs via tracing.
+///
+/// **`UpstreamWire::Unknown`** (cooldown fixtures / synthesised
+/// errors): legacy generic envelope.
+fn render_bridge_upstream_envelope(
+    status: u16,
+    message: &str,
+    parsed: Option<&aisix_gateway::UpstreamErrorView>,
+    wire: aisix_gateway::UpstreamWire,
+) -> ErrorEnvelope {
+    let is_4xx = (400..500).contains(&status);
+    if is_4xx && !matches!(wire, aisix_gateway::UpstreamWire::Unknown) {
+        return ErrorEnvelope {
+            error: crate::error_translate::render_openai_envelope(parsed, wire, message),
+        };
+    }
+    let safe_message = if (500..600).contains(&status) {
+        // Suppress upstream `error.message` on 5xx — engine names /
+        // shard ids / ARNs commonly appear here and are not customer
+        // information.
+        format!("upstream returned {status}")
+    } else {
+        message.to_string()
+    };
+    ErrorEnvelope::new(safe_message, "upstream_error")
 }
 
 impl IntoResponse for ProxyError {

@@ -237,21 +237,46 @@ fn upstream_model(ctx: &BridgeContext) -> Result<&str, BridgeError> {
 }
 
 async fn map_http_error(status: StatusCode, resp: reqwest::Response) -> BridgeError {
-    let retry_after = aisix_gateway::parse_retry_after(resp.headers());
-    let message = resp.text().await.unwrap_or_default();
-    BridgeError::upstream_status_with_retry_after(
-        status.as_u16(),
-        truncate(&message, 1024),
-        retry_after,
+    aisix_gateway::capture_upstream_error_http(
+        status,
+        resp,
+        aisix_gateway::UpstreamWire::OpenAI,
+        parse_openai_error_envelope,
     )
+    .await
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..n])
+/// Parse the canonical OpenAI error envelope:
+///
+/// ```json
+/// {"error": {"message": "...", "type": "...", "code": "...", "param": "..."}}
+/// ```
+///
+/// Returns `None` when the body is not JSON of that shape; the caller
+/// falls back to the truncated raw body string for the `message` field
+/// and emits a generic `upstream_error` envelope.
+///
+/// Reference: <https://platform.openai.com/docs/guides/error-codes/api-errors>
+fn parse_openai_error_envelope(body: &[u8]) -> Option<aisix_gateway::UpstreamErrorView> {
+    #[derive(serde::Deserialize)]
+    struct Outer {
+        error: Inner,
     }
+    #[derive(serde::Deserialize)]
+    struct Inner {
+        message: Option<String>,
+        #[serde(rename = "type")]
+        kind: Option<String>,
+        code: Option<String>,
+        param: Option<String>,
+    }
+    let outer: Outer = serde_json::from_slice(body).ok()?;
+    Some(aisix_gateway::UpstreamErrorView {
+        kind: outer.error.kind,
+        message: outer.error.message,
+        code: outer.error.code,
+        param: outer.error.param,
+    })
 }
 
 /// Wrap a future in the optional deadline. `None` → no timeout.
@@ -780,6 +805,85 @@ mod tests {
             } => {
                 assert_eq!(status, 429);
                 assert!(message.contains("slow down"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// Audit fix (PR #323): the [`aisix_gateway::MAX_UPSTREAM_ERROR_BODY_BYTES`]
+    /// (64 KB) cap must actually fire on an oversized upstream error
+    /// body, otherwise a misbehaved upstream could pin a worker's
+    /// memory. Pins the cap as a regression test — exercises
+    /// `read_body_capped` end-to-end through the OpenAI bridge.
+    #[tokio::test]
+    async fn non_streaming_oversize_error_body_truncated_to_max_message_bytes() {
+        let server = MockServer::start().await;
+        // 200 KB body — well above the 64 KB read cap and the 1024-byte
+        // message cap.
+        let huge_body = "x".repeat(200 * 1024);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).set_body_string(huge_body))
+            .mount(&server)
+            .await;
+
+        let bridge = OpenAiBridge::new();
+        let ctx = sample_ctx(&server.uri());
+        let err = bridge.chat(&req(), &ctx).await.unwrap_err();
+        match err {
+            BridgeError::UpstreamStatus { message, .. } => {
+                // Outer message must respect the 1024-byte cap + the
+                // ellipsis marker. 8 bytes of slack for the ellipsis
+                // (3-byte UTF-8 char) plus any partial-codepoint
+                // alignment back-off.
+                assert!(
+                    message.len() <= aisix_gateway::MAX_UPSTREAM_ERROR_MESSAGE_BYTES + 8,
+                    "outer message must be truncated; got {} bytes",
+                    message.len()
+                );
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// Audit fix (PR #323): JSON-shaped envelopes with a huge inner
+    /// `error.message` must ALSO be truncated. Without this, an
+    /// upstream OpenAI-shape envelope embedding a 60 KB message would
+    /// bypass the cap by going through the parsed-view path. Pins
+    /// HIGH-2 from the audit.
+    #[tokio::test]
+    async fn non_streaming_oversize_parsed_message_truncated() {
+        let server = MockServer::start().await;
+        let huge = "y".repeat(60 * 1024);
+        let body = format!(r#"{{"error":{{"message":"{huge}","type":"big","code":"big_code"}}}}"#);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_raw(body.as_bytes(), "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let bridge = OpenAiBridge::new();
+        let ctx = sample_ctx(&server.uri());
+        let err = bridge.chat(&req(), &ctx).await.unwrap_err();
+        match err {
+            BridgeError::UpstreamStatus {
+                message, parsed, ..
+            } => {
+                assert!(
+                    message.len() <= aisix_gateway::MAX_UPSTREAM_ERROR_MESSAGE_BYTES + 8,
+                    "outer message exceeded cap: {} bytes",
+                    message.len()
+                );
+                let parsed = parsed.expect("envelope parsed");
+                let pm = parsed.message.as_ref().expect("parsed message present");
+                assert!(
+                    pm.len() <= aisix_gateway::MAX_UPSTREAM_ERROR_MESSAGE_BYTES + 8,
+                    "parsed.message exceeded cap: {} bytes",
+                    pm.len()
+                );
+                assert_eq!(parsed.code.as_deref(), Some("big_code"));
             }
             other => panic!("unexpected: {other:?}"),
         }
