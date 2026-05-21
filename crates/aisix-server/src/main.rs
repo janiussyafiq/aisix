@@ -825,8 +825,10 @@ fn build_hub() -> Hub {
         Provider::Perplexity,
         Arc::new(OpenAiBridge::new().with_name("perplexity")),
     );
-    // Provider::Xai scoped out — see model.rs comment on the Xai
-    // variant (deferred until cp-api adapter_map adds the entry).
+    hub.register(
+        Provider::Xai,
+        Arc::new(OpenAiBridge::new().with_name("xai")),
+    );
     hub.register(
         Provider::Moonshotai,
         Arc::new(OpenAiBridge::new().with_name("moonshotai")),
@@ -879,6 +881,28 @@ fn build_hub() -> Hub {
     hub.register_family(Adapter::Vertex, Arc::new(VertexBridge::new()));
     hub.register_family(Adapter::AzureOpenai, Arc::new(AzureOpenAiBridge::new()));
     hub.register_family(Adapter::Bedrock, Arc::new(BedrockBridge::new()));
+
+    // OpenAI / Anthropic family fallthrough (closes
+    // api7/AISIX-Cloud#417). cp-api admits any models.dev provider
+    // (e.g. `xai`) and projects `adapter: "openai"` per
+    // adapter_map.yaml's default rule (internal/cpapi/adapter_map),
+    // but without these family registrations `dispatch_two_tier`
+    // misses on the specialized tier, falls through to legacy
+    // `hub.get(Provider::<vendor>)`, and 500s for any vendor not
+    // enumerated in the legacy `Provider` enum.
+    //
+    // The legacy per-Provider `hub.register(Provider::Xxx, ...)`
+    // above stays as live dispatch for `pk.adapter: None` rows
+    // (pre-Phase-A schema). For new-schema rows
+    // (`pk.adapter: Some(Adapter::Openai)`), the family bridge
+    // resolves first and reads `ProviderKey.api_base` directly —
+    // cp-api guarantees a non-empty api_base for non-featured
+    // catalog rows by populating from `provider_metadata.api_base_url`
+    // before persisting (handlers.go createProviderKey gate), so the
+    // bridge never falls back to its `default_base()` constant for
+    // long-tail vendors.
+    hub.register_family(Adapter::Openai, Arc::new(OpenAiBridge::new()));
+    hub.register_family(Adapter::Anthropic, Arc::new(AnthropicBridge::new()));
 
     hub
 }
@@ -1196,6 +1220,7 @@ mod tests {
             (aisix_core::Provider::Togetherai, "togetherai"),
             (aisix_core::Provider::FireworksAi, "fireworks-ai"),
             (aisix_core::Provider::Perplexity, "perplexity"),
+            (aisix_core::Provider::Xai, "xai"),
             (aisix_core::Provider::Moonshotai, "moonshotai"),
             (aisix_core::Provider::Alibaba, "alibaba"),
             (aisix_core::Provider::Zhipuai, "zhipuai"),
@@ -1218,5 +1243,60 @@ mod tests {
                  OpenAiBridge::default_base() fallback when api_base is unset",
             );
         }
+    }
+
+    /// `build_hub()` must register `Adapter::Openai` as a family
+    /// bridge so any non-enumerated catalog provider (e.g. `xai`,
+    /// `openrouter`, any future models.dev long-tail) routes via
+    /// `dispatch_two_tier`'s family fall-through instead of falling
+    /// past it into legacy `hub.get(Provider::<vendor>)` and 500-ing
+    /// when the enum variant is missing. Closes
+    /// api7/AISIX-Cloud#417 — `xai` was admitted by cp-api via the
+    /// adapter_map default rule but had no DP `Provider` variant.
+    #[test]
+    fn build_hub_registers_openai_family_bridge_for_non_enumerated_vendors() {
+        let hub = build_hub();
+        // `xai` is the exact case that #417 surfaced — admitted by
+        // cp-api's `isAcceptedProvider` via `provider_metadata` but
+        // not in the legacy `Provider` enum. With the family bridge
+        // registered, the new-schema PK (carrying `adapter: openai`
+        // from cp-api's adapter_map default rule) resolves via
+        // `dispatch_two_tier` and dispatches against the
+        // `ProviderKey.api_base` cp-api populated from
+        // `provider_metadata.api_base_url`.
+        let json =
+            r#"{"display_name":"xai-pk","secret":"sk-test","provider":"xai","adapter":"openai"}"#;
+        let pk: aisix_core::ProviderKey = serde_json::from_str(json).unwrap();
+        let bridge = hub.dispatch_two_tier(&pk).unwrap_or_else(|| {
+            panic!(
+                "Adapter::Openai family bridge must be registered so non-enumerated \
+                 catalog vendors (xai, openrouter, future long-tail) resolve via \
+                 dispatch_two_tier — a missing family bridge re-introduces #417"
+            )
+        });
+        assert_eq!(
+            bridge.name(),
+            "openai",
+            "Adapter::Openai family bridge must be the bare OpenAiBridge::new() — \
+             a `with_name(...)` variant here would mis-label every non-enumerated \
+             vendor's traffic to the chosen name",
+        );
+    }
+
+    /// Companion to the OpenAI family check above: `Adapter::Anthropic`
+    /// must also be registered so the same fall-through works for any
+    /// Anthropic-compat vendor cp-api admits via the default rule.
+    #[test]
+    fn build_hub_registers_anthropic_family_bridge() {
+        let hub = build_hub();
+        let json = r#"{"display_name":"anthropic-compat-pk","secret":"sk-test","provider":"future-anthropic-compat","adapter":"anthropic"}"#;
+        let pk: aisix_core::ProviderKey = serde_json::from_str(json).unwrap();
+        let bridge = hub.dispatch_two_tier(&pk).unwrap_or_else(|| {
+            panic!(
+                "Adapter::Anthropic family bridge must be registered for symmetry \
+                 with Adapter::Openai — see issue #302 Phase A two-tier dispatch"
+            )
+        });
+        assert_eq!(bridge.name(), "anthropic");
     }
 }

@@ -92,9 +92,8 @@ const FIREWORKS_AI_DEFAULT_BASE: &str = "https://api.fireworks.ai/inference/v1";
 // Per https://docs.perplexity.ai/api-reference/chat-completions-post
 // (chat endpoint is at the host root, NOT /v1).
 const PERPLEXITY_DEFAULT_BASE: &str = "https://api.perplexity.ai";
-// xAI Grok scoped out: not in cp-api adapter_map.yaml today (#335
-// swapped xai → google for Featured rank 8); follow-up will add it
-// after the catalog catches up.
+// Per https://docs.x.ai/docs/api-reference (OpenAI-compat at /v1).
+const XAI_DEFAULT_BASE: &str = "https://api.x.ai/v1";
 // Per https://platform.moonshot.cn/docs/api/chat
 const MOONSHOTAI_DEFAULT_BASE: &str = "https://api.moonshot.cn/v1";
 // Per https://help.aliyun.com/zh/dashscope/developer-reference/compatibility-of-openai-with-dashscope
@@ -162,6 +161,7 @@ impl OpenAiBridge {
             "togetherai" => TOGETHERAI_DEFAULT_BASE,
             "fireworks-ai" => FIREWORKS_AI_DEFAULT_BASE,
             "perplexity" => PERPLEXITY_DEFAULT_BASE,
+            "xai" => XAI_DEFAULT_BASE,
             "moonshotai" => MOONSHOTAI_DEFAULT_BASE,
             "alibaba" => ALIBABA_DEFAULT_BASE,
             "zhipuai" => ZHIPUAI_DEFAULT_BASE,
@@ -195,12 +195,51 @@ impl OpenAiBridge {
     /// path is left as-is after suffix stripping — Gemini's `/v1beta/openai`
     /// prefix is non-trivial and operators typically copy-paste the full
     /// form.
-    fn resolve_base(&self, ctx: &BridgeContext) -> String {
+    fn resolve_base(&self, ctx: &BridgeContext) -> Result<String, BridgeError> {
         let raw = match ctx.provider_key.api_base.as_deref() {
             Some(b) if !b.trim().is_empty() => b.trim().to_string(),
-            _ => return self.default_base().to_string(),
+            _ => {
+                // Family-bridge safety: when `self.name == "openai"`
+                // (the `Adapter::Openai` family registration, see
+                // `crates/aisix-server/src/main.rs::build_hub()`), a
+                // non-openai vendor reaching this branch means cp-api
+                // failed to populate `api_base` for that PK. Falling
+                // back to `OPENAI_DEFAULT_BASE` here would route the
+                // vendor's traffic and API key to `api.openai.com`.
+                // Refuse loud. Closes the openrouter half of
+                // api7/AISIX-Cloud#417 (rank-9 Featured entry has no
+                // canonical `default_base_url`, so cp-api admission
+                // without explicit `api_base` lands here with an
+                // empty PK base).
+                //
+                // Legacy `Provider`-keyed registrations
+                // (`Provider::Groq`, `Provider::Cohere`, …) are
+                // unaffected — they use `with_name("groq")` etc.
+                // so `self.name != "openai"`. Pre-Phase-A rows
+                // (empty `provider` string) also pass through to
+                // the historical `default_base()` behavior.
+                // Normalize the vendor string before comparing so a
+                // crafted PK with `"OpenAI"` / `"openai "` / `" openai"`
+                // can't bypass the guard and silently route a
+                // non-openai customer's API key to api.openai.com.
+                // cp-api today rejects unknown strings at admission,
+                // but the DP is the security boundary and must not
+                // trust cp-api's normalization.
+                let pk_vendor_raw = ctx.provider_key.provider.as_str();
+                let pk_vendor = pk_vendor_raw.trim().to_ascii_lowercase();
+                if self.name == "openai" && !pk_vendor.is_empty() && pk_vendor != "openai" {
+                    return Err(BridgeError::Config(format!(
+                        "provider {pk_vendor_raw:?} has no api_base set; \
+                         the OpenAI-family bridge refuses to fall back to \
+                         api.openai.com to avoid routing {pk_vendor_raw:?}'s \
+                         API key to OpenAI. Set api_base on the provider \
+                         key, or switch to the BYO sentinel."
+                    )));
+                }
+                return Ok(self.default_base().to_string());
+            }
         };
-        normalize_api_base(&raw, self.name)
+        Ok(normalize_api_base(&raw, self.name))
     }
 }
 
@@ -478,7 +517,7 @@ impl Bridge for OpenAiBridge {
         req: &ChatFormat,
         ctx: &BridgeContext,
     ) -> Result<ChatResponse, BridgeError> {
-        let base = self.resolve_base(ctx);
+        let base = self.resolve_base(ctx)?;
         let key = api_key(ctx)?;
         let upstream = upstream_model(ctx)?;
 
@@ -528,7 +567,7 @@ impl Bridge for OpenAiBridge {
         req: &EmbeddingRequest,
         ctx: &BridgeContext,
     ) -> Result<EmbeddingResponse, BridgeError> {
-        let base = self.resolve_base(ctx);
+        let base = self.resolve_base(ctx)?;
         let key = api_key(ctx)?;
         let upstream = upstream_model(ctx)?;
 
@@ -570,7 +609,7 @@ impl Bridge for OpenAiBridge {
         body: &serde_json::Value,
         ctx: &BridgeContext,
     ) -> Result<serde_json::Value, BridgeError> {
-        let base = self.resolve_base(ctx);
+        let base = self.resolve_base(ctx)?;
         let key = api_key(ctx)?;
         let upstream = upstream_model(ctx)?;
 
@@ -618,7 +657,7 @@ impl Bridge for OpenAiBridge {
         body: &serde_json::Value,
         ctx: &BridgeContext,
     ) -> Result<serde_json::Value, BridgeError> {
-        let base = self.resolve_base(ctx);
+        let base = self.resolve_base(ctx)?;
         let key = api_key(ctx)?;
         let upstream = upstream_model(ctx)?;
 
@@ -666,7 +705,7 @@ impl Bridge for OpenAiBridge {
         req: &ChatFormat,
         ctx: &BridgeContext,
     ) -> Result<ChatChunkStream, BridgeError> {
-        let base = self.resolve_base(ctx);
+        let base = self.resolve_base(ctx)?;
         let key = api_key(ctx)?;
         let upstream = upstream_model(ctx)?;
 
@@ -1165,7 +1204,7 @@ data: [DONE]\n\n";
         let pk_default: ProviderKey =
             serde_json::from_str(r#"{"display_name":"x","secret":"k"}"#).unwrap();
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_default));
-        assert_eq!(bridge.resolve_base(&ctx), OPENAI_DEFAULT_BASE);
+        assert_eq!(bridge.resolve_base(&ctx).unwrap(), OPENAI_DEFAULT_BASE);
 
         // api_base override: trailing slash stripped.
         let pk_override: ProviderKey = serde_json::from_str(
@@ -1173,12 +1212,130 @@ data: [DONE]\n\n";
         )
         .unwrap();
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_override));
-        assert_eq!(bridge.resolve_base(&ctx), "https://proxy.example.com/v1");
+        assert_eq!(
+            bridge.resolve_base(&ctx).unwrap(),
+            "https://proxy.example.com/v1"
+        );
     }
 
     fn pk_with_base(api_base: &str) -> ProviderKey {
         let cfg = format!(r#"{{"display_name":"x","secret":"k","api_base":"{api_base}"}}"#);
         serde_json::from_str(&cfg).unwrap()
+    }
+
+    /// `Adapter::Openai` family bridge (`OpenAiBridge::new()`, name =
+    /// `"openai"`) must refuse to dispatch a non-openai vendor whose
+    /// `ProviderKey.api_base` is empty. Falling back to
+    /// `OPENAI_DEFAULT_BASE` here would send the vendor's API key to
+    /// `api.openai.com`. Closes the openrouter half of #417 (rank-9
+    /// Featured catalog entry has no canonical `default_base_url`, so
+    /// cp-api admission without an explicit `api_base` lands here
+    /// with an empty PK base).
+    #[test]
+    fn family_bridge_refuses_non_openai_vendor_with_empty_api_base() {
+        let bridge = OpenAiBridge::new();
+        let pk: ProviderKey = serde_json::from_str(
+            r#"{"display_name":"or","secret":"sk-or","provider":"openrouter","adapter":"openai"}"#,
+        )
+        .unwrap();
+        let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
+        let err = bridge.resolve_base(&ctx).unwrap_err();
+        match err {
+            BridgeError::Config(msg) => {
+                assert!(
+                    msg.contains("openrouter") && msg.contains("api_base"),
+                    "error must name the vendor and the missing field; got: {msg}"
+                );
+            }
+            other => panic!("expected BridgeError::Config, got {other:?}"),
+        }
+    }
+
+    /// Pure-openai PK without `api_base` falls back to
+    /// `OPENAI_DEFAULT_BASE` — the historical behavior the legacy
+    /// `hub.register(Provider::Openai, …)` path relied on. The
+    /// safety check above only fires for non-openai vendors.
+    #[test]
+    fn family_bridge_allows_openai_vendor_with_empty_api_base() {
+        let bridge = OpenAiBridge::new();
+        let pk: ProviderKey = serde_json::from_str(
+            r#"{"display_name":"oai","secret":"sk-oai","provider":"openai","adapter":"openai"}"#,
+        )
+        .unwrap();
+        let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
+        assert_eq!(bridge.resolve_base(&ctx).unwrap(), OPENAI_DEFAULT_BASE);
+    }
+
+    /// Pre-Phase-A PK schema carries an empty `provider` string. The
+    /// safety check must NOT fire here — those rows route through the
+    /// legacy `hub.get(Provider::Openai)` path with the historical
+    /// `OPENAI_DEFAULT_BASE` fallback. A regression that errored on
+    /// empty `provider` would 500 every legacy-schema chat.
+    #[test]
+    fn family_bridge_allows_legacy_empty_provider_with_empty_api_base() {
+        let bridge = OpenAiBridge::new();
+        let pk: ProviderKey = serde_json::from_str(r#"{"display_name":"x","secret":"k"}"#).unwrap();
+        let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
+        assert_eq!(bridge.resolve_base(&ctx).unwrap(), OPENAI_DEFAULT_BASE);
+    }
+
+    /// MEDIUM-2 from #365 audit: the guard normalizes the PK vendor
+    /// before comparing. A crafted PK carrying `provider="OpenAI"`
+    /// (capitalized) or `provider="openai "` (trailing whitespace)
+    /// must NOT bypass the guard and silently route to api.openai.com
+    /// — cp-api today rejects unknown strings at admission, but the
+    /// DP is the security boundary and must not trust cp-api's
+    /// normalization. cp-api still gets the unnormalized vendor id
+    /// in the error message so operators can identify the row.
+    #[test]
+    fn family_bridge_normalizes_vendor_before_compare() {
+        let bridge = OpenAiBridge::new();
+
+        // Whitespace-padded — must NOT match "openai" exactly, but
+        // also must NOT bypass the guard.
+        let pk: ProviderKey =
+            serde_json::from_str(r#"{"display_name":"x","secret":"k","provider":" openai "}"#)
+                .unwrap();
+        let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
+        // Whitespace-only normalizes to "openai" — same vendor, not
+        // routed to a different upstream; falls back to default base.
+        assert_eq!(bridge.resolve_base(&ctx).unwrap(), OPENAI_DEFAULT_BASE);
+
+        // Crafted casing for a different vendor — must trip the
+        // guard. Without normalization, `"XAI" != "openai"` is true
+        // and the guard fires; with normalization, `"xai" != "openai"`
+        // also fires. Both paths catch it; this test pins that the
+        // guard does not silently fall back to OpenAI.
+        let pk: ProviderKey =
+            serde_json::from_str(r#"{"display_name":"x","secret":"k","provider":"XAI"}"#).unwrap();
+        let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
+        let err = bridge.resolve_base(&ctx).unwrap_err();
+        match err {
+            BridgeError::Config(msg) => {
+                // Error message echoes the unnormalized vendor id
+                // so the operator can identify the bad PK row.
+                assert!(
+                    msg.contains("\"XAI\"") && msg.contains("api_base"),
+                    "error must surface the original vendor id; got: {msg}"
+                );
+            }
+            other => panic!("expected BridgeError::Config, got {other:?}"),
+        }
+    }
+
+    /// The xai happy path: cp-api populates `api_base` from
+    /// `provider_metadata.api_base_url` (handlers.go createProviderKey
+    /// gate at 2537-2557), so the family bridge sees a populated base
+    /// and dispatches normally.
+    #[test]
+    fn family_bridge_allows_non_openai_vendor_with_populated_api_base() {
+        let bridge = OpenAiBridge::new();
+        let pk: ProviderKey = serde_json::from_str(
+            r#"{"display_name":"xai","secret":"sk-xai","provider":"xai","adapter":"openai","api_base":"https://api.x.ai/v1"}"#,
+        )
+        .unwrap();
+        let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
+        assert_eq!(bridge.resolve_base(&ctx).unwrap(), "https://api.x.ai/v1");
     }
 
     /// All three OpenAI api_base forms a real operator might paste must
@@ -1199,7 +1356,7 @@ data: [DONE]\n\n";
         ] {
             let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_with_base(form)));
             assert_eq!(
-                bridge.resolve_base(&ctx),
+                bridge.resolve_base(&ctx).unwrap(),
                 canonical,
                 "form {form:?} should normalize to {canonical}",
             );
@@ -1222,7 +1379,7 @@ data: [DONE]\n\n";
         ] {
             let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_with_base(form)));
             assert_eq!(
-                bridge.resolve_base(&ctx),
+                bridge.resolve_base(&ctx).unwrap(),
                 canonical,
                 "form {form:?} should normalize to {canonical}",
             );
@@ -1237,7 +1394,10 @@ data: [DONE]\n\n";
         let bridge = OpenAiBridge::new().with_name("deepseek");
         let pk: ProviderKey = serde_json::from_str(r#"{"display_name":"x","secret":"k"}"#).unwrap();
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
-        assert_eq!(bridge.resolve_base(&ctx), "https://api.deepseek.com");
+        assert_eq!(
+            bridge.resolve_base(&ctx).unwrap(),
+            "https://api.deepseek.com"
+        );
     }
 
     /// Gemini default must target the OpenAI-compatible `/v1beta/openai`
@@ -1248,7 +1408,7 @@ data: [DONE]\n\n";
         let pk: ProviderKey = serde_json::from_str(r#"{"display_name":"x","secret":"k"}"#).unwrap();
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
         assert_eq!(
-            bridge.resolve_base(&ctx),
+            bridge.resolve_base(&ctx).unwrap(),
             "https://generativelanguage.googleapis.com/v1beta/openai",
         );
     }
@@ -1264,7 +1424,7 @@ data: [DONE]\n\n";
         let pk: ProviderKey = serde_json::from_str(r#"{"display_name":"x","secret":"k"}"#).unwrap();
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
         assert_eq!(
-            bridge.resolve_base(&ctx),
+            bridge.resolve_base(&ctx).unwrap(),
             "https://api.cohere.com/compatibility/v1",
         );
     }
@@ -1290,7 +1450,7 @@ data: [DONE]\n\n";
         ] {
             let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_with_base(form)));
             assert_eq!(
-                bridge.resolve_base(&ctx),
+                bridge.resolve_base(&ctx).unwrap(),
                 canonical,
                 "form {form:?} should normalize to {canonical}",
             );
@@ -1300,7 +1460,7 @@ data: [DONE]\n\n";
         let custom = "https://proxy.acme.internal/cohere-chat";
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_with_base(custom)));
         assert_eq!(
-            bridge.resolve_base(&ctx),
+            bridge.resolve_base(&ctx).unwrap(),
             custom,
             "non-canonical host must NOT be rewritten",
         );
@@ -1375,7 +1535,7 @@ data: [DONE]\n\n";
                 serde_json::from_str(r#"{"display_name":"x","secret":"k"}"#).unwrap();
             let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
             assert_eq!(
-                bridge.resolve_base(&ctx),
+                bridge.resolve_base(&ctx).unwrap(),
                 expected_base,
                 "with_name(\"{name}\") must fall back to {expected_base} when api_base is unset; \
                  a missing arm silently routes the provider to OpenAI's API host"
@@ -1396,7 +1556,7 @@ data: [DONE]\n\n";
         let custom = "https://corporate-proxy.acme.internal/groq";
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_with_base(custom)));
         assert_eq!(
-            bridge.resolve_base(&ctx),
+            bridge.resolve_base(&ctx).unwrap(),
             custom,
             "operator-supplied api_base must pass through for long-tail providers"
         );
@@ -1412,20 +1572,20 @@ data: [DONE]\n\n";
         // Canonical form passes through.
         let canonical = "https://generativelanguage.googleapis.com/v1beta/openai";
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_with_base(canonical)));
-        assert_eq!(bridge.resolve_base(&ctx), canonical);
+        assert_eq!(bridge.resolve_base(&ctx).unwrap(), canonical);
 
         // Endpoint suffix is stripped.
         let with_suffix =
             "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_with_base(with_suffix)));
-        assert_eq!(bridge.resolve_base(&ctx), canonical);
+        assert_eq!(bridge.resolve_base(&ctx).unwrap(), canonical);
 
         // Bare host is left as-is — the operator's responsibility to
         // include the unusual prefix. (See provider-keys.md for the
         // per-provider truth table.)
         let bare = "https://generativelanguage.googleapis.com";
         let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk_with_base(bare)));
-        assert_eq!(bridge.resolve_base(&ctx), bare);
+        assert_eq!(bridge.resolve_base(&ctx).unwrap(), bare);
     }
 
     // ----------- issue #302 §5 wire-in: RequestOverrides -----------

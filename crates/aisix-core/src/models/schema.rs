@@ -117,7 +117,7 @@ fn model_schema() -> Value {
         "additionalProperties": false,
         "properties": {
             "display_name":    { "type": "string", "minLength": 1 },
-            "provider":        { "type": "string", "enum": ["openai","anthropic","google","deepseek","cohere","jina","groq","mistral","togetherai","fireworks-ai","perplexity","moonshotai","alibaba","zhipuai","baseten","huggingface","cerebras"] },
+            "provider":        { "type": "string", "enum": ["openai","anthropic","google","deepseek","cohere","jina","groq","mistral","togetherai","fireworks-ai","perplexity","xai","moonshotai","alibaba","zhipuai","baseten","huggingface","cerebras"] },
             "model_name":      { "type": "string", "minLength": 1 },
             "provider_key_id": { "type": "string", "minLength": 1 },
             "timeout":         { "type": "integer", "minimum": 0 },
@@ -593,6 +593,22 @@ mod tests {
             "provider_key_id": "pk-1"
         });
         assert!(validate_model(&v).is_err());
+    }
+
+    /// `xai` was admitted by cp-api via `provider_metadata` (pricesync
+    /// from models.dev) before this PR, but the DP's closed-enum
+    /// schema rejected the Model row in `validate_model`, leaving the
+    /// row in `stats.rejections` and producing a 404 on chat.
+    /// Closes the schema-validation half of api7/AISIX-Cloud#417.
+    #[test]
+    fn model_with_xai_provider_passes() {
+        let v = json!({
+            "display_name": "x",
+            "provider": "xai",
+            "model_name": "grok-4",
+            "provider_key_id": "pk-1"
+        });
+        validate_model(&v).unwrap();
     }
 
     #[test]

@@ -71,13 +71,13 @@ pub enum Provider {
     /// Perplexity — OpenAI-compat at `https://api.perplexity.ai`
     /// (chat lives at the host root).
     Perplexity,
-    // xAI Grok was scoped out of this PR after audit: `xai` is not in
-    // AISIX-Cloud's `internal/cpapi/adapter_map/adapter_map.yaml`
-    // Featured table (PR #335 swapped xai → google for rank 8), so
-    // adding `Provider::Xai` here without a catalog entry would leave
-    // a DP variant cp-api can't write to. Tracked as a separate
-    // follow-up: add xai to adapter_map.yaml first, then a one-line
-    // Provider::Xai DP-side commit will follow.
+    /// xAI Grok — OpenAI-compat at `https://api.x.ai/v1`. Admitted
+    /// by cp-api via the models.dev catalog (`provider_metadata`)
+    /// long-tail path; closes the schema-validation half of
+    /// api7/AISIX-Cloud#417. The dispatch routing half is handled
+    /// by the `Adapter::Openai` family bridge registered in
+    /// `crates/aisix-server/src/main.rs::build_hub()`.
+    Xai,
     /// Moonshot AI (Kimi) — OpenAI-compat at `https://api.moonshot.cn/v1`.
     Moonshotai,
     /// Alibaba Cloud DashScope — OpenAI-compat at
@@ -114,6 +114,7 @@ impl Provider {
             Self::Togetherai => "https://api.together.ai/v1",
             Self::FireworksAi => "https://api.fireworks.ai/inference/v1",
             Self::Perplexity => "https://api.perplexity.ai",
+            Self::Xai => "https://api.x.ai/v1",
             Self::Moonshotai => "https://api.moonshot.cn/v1",
             Self::Alibaba => "https://dashscope.aliyuncs.com/compatible-mode/v1",
             Self::Zhipuai => "https://open.bigmodel.cn/api/paas/v4",
@@ -139,6 +140,7 @@ impl Provider {
             Self::Togetherai => "togetherai",
             Self::FireworksAi => "fireworks-ai",
             Self::Perplexity => "perplexity",
+            Self::Xai => "xai",
             Self::Moonshotai => "moonshotai",
             Self::Alibaba => "alibaba",
             Self::Zhipuai => "zhipuai",
@@ -219,6 +221,7 @@ impl From<Provider> for Adapter {
             | Provider::Togetherai
             | Provider::FireworksAi
             | Provider::Perplexity
+            | Provider::Xai
             | Provider::Moonshotai
             | Provider::Alibaba
             | Provider::Zhipuai

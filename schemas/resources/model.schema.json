@@ -316,6 +316,13 @@
           ]
         },
         {
+          "description": "xAI Grok — OpenAI-compat at `https://api.x.ai/v1`. Admitted by cp-api via the models.dev catalog (`provider_metadata`) long-tail path; closes the schema-validation half of api7/AISIX-Cloud#417. The dispatch routing half is handled by the `Adapter::Openai` family bridge registered in `crates/aisix-server/src/main.rs::build_hub()`.",
+          "type": "string",
+          "enum": [
+            "xai"
+          ]
+        },
+        {
           "description": "Moonshot AI (Kimi) — OpenAI-compat at `https://api.moonshot.cn/v1`.",
           "type": "string",
           "enum": [
