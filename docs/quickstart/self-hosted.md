@@ -10,7 +10,7 @@ This guide shows how to start a self-hosted AISIX AI Gateway instance with the l
 
 - **Rust 1.93 or newer with `cargo`.** Install via [rustup](https://rustup.rs) and verify with `cargo --version`. The repo pins this version through `rust-toolchain.toml`, so `rustup` selects the right channel automatically.
 - Docker
-- A reachable etcd instance
+- A reachable [etcd](../overview/glossary.md#etcd) instance
 
 ## Step 1: Start etcd
 
@@ -29,7 +29,7 @@ docker run -d \
 
 ## Step 2: Create a bootstrap config
 
-Create a local `config.yaml` based on the example config.
+Create a local `config.yaml` based on the example config. Place this file in the repo root — Step 3's `cargo run` looks for `config.yaml` relative to your current working directory.
 
 ```yaml title="config.yaml" {2-7,9-14}
 etcd:
@@ -65,7 +65,7 @@ cargo run -p aisix-server --bin aisix -- --config config.yaml
 
 The first time you run this, `cargo` will compile several hundred dependencies before the gateway starts, which typically takes 3–5 minutes on common hardware. Subsequent runs are incremental and much faster.
 
-In another terminal, you should now have:
+Keep this terminal running. In a new terminal, you should now have:
 
 - proxy listener on `http://127.0.0.1:3000`
 - admin listener on `http://127.0.0.1:3001`
