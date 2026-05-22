@@ -196,6 +196,7 @@ pub async fn chat_completions(
                         cache_hit_saved_output_tokens: success.cache_hit_saved_output_tokens,
                         ttft_ms: 0,
                         routing: success.routing.clone(),
+                        provider_key_id: success.provider_key_id.clone(),
                     },
                     success.cost_usd,
                     /* guardrail_blocked */ false,
@@ -325,6 +326,7 @@ pub async fn chat_completions(
                         cache_hit_saved_output_tokens: 0,
                         ttft_ms: 0,
                         routing: c.routing,
+                        provider_key_id: c.provider_key_id,
                     },
                 ),
                 None => {
@@ -543,6 +545,12 @@ mod served_by_target_tests {
 /// failures, rate-limit rejections, model-not-found, etc. all happen
 /// BEFORE any upstream call and the customer pays nothing.
 struct UpstreamCharge {
+    /// UUID of the resolved ProviderKey. Threaded through so
+    /// `emit_usage_event` can look up `telemetry_tags` even on the
+    /// output-guardrail-block path (where dispatch reached the
+    /// upstream and billed the request). Empty if for some reason the
+    /// charge was assembled without a known PK.
+    provider_key_id: String,
     prompt_tokens: u32,
     completion_tokens: u32,
     cached_prompt_tokens: u32,
@@ -781,6 +789,13 @@ async fn dispatch(
         let provider_for_metrics = provider.to_ascii_lowercase();
         let model_for_metrics = req.model.clone();
         let provider_key_id_for_metrics = pk_entry.id.clone();
+        // Captured for the stream-end telemetry closure so
+        // emit_usage_event can look up `telemetry_tags` for per-PK
+        // attribution (#302 M17 / AISIX-Cloud#436). The metrics
+        // variant above is `&str`-scoped to inner scopes that consume
+        // it as a borrow; the telem variant is owned for the move
+        // into the on_complete closure.
+        let provider_key_id_for_telem = pk_entry.id.clone();
         let upstream_model_for_metrics = model.upstream_model().unwrap_or("unknown").to_string();
         let bypass_reason_for_telem = bypass_reason.clone().unwrap_or_default();
         let stream_routing = if virtual_entry.value.routing.is_some() {
@@ -874,6 +889,7 @@ async fn dispatch(
                         cache_hit_saved_output_tokens: 0,
                         ttft_ms: comp.ttft_ms,
                         routing: stream_routing_for_telem.clone(),
+                        provider_key_id: provider_key_id_for_telem.clone(),
                     },
                     /* cost_usd */ 0.0,
                     comp.guardrail_blocked,
@@ -1293,6 +1309,7 @@ async fn dispatch(
             // auditing input-bypass would never see them on
             // output-blocked requests.
             let charge = UpstreamCharge {
+                provider_key_id: provider_key_id.clone(),
                 prompt_tokens: upstream.usage.prompt_tokens,
                 completion_tokens: upstream.usage.completion_tokens,
                 cached_prompt_tokens,
@@ -1596,6 +1613,19 @@ fn emit_usage_event(
     cost_usd: f64,
     guardrail_blocked: bool,
 ) {
+    // Look up per-PK telemetry attribution tags from the live snapshot.
+    // Empty `provider_key_id` (pre-dispatch error paths) → default
+    // tags (all empty / false) → wire fields skip-serialize → cp-api
+    // stores NULL. See AISIX-Cloud#436.
+    let snap = state.snapshot.load();
+    let tags = if !extras.provider_key_id.is_empty() {
+        snap.provider_keys
+            .get_by_id(&extras.provider_key_id)
+            .map(|e| e.value.telemetry_tags.clone())
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
     let event = UsageEvent {
         request_id: request_id.to_string(),
         // RFC 3339 UTC. cp-api parses with time.Parse(time.RFC3339, ...);
@@ -1630,17 +1660,59 @@ fn emit_usage_event(
         routing_attempt_count: extras.routing.attempt_count,
         routing_fallback_count: extras.routing.fallback_count,
         routing_attempts: extras.routing.attempts,
+        // Per-PK telemetry attribution (#302 M17 / AISIX-Cloud#436).
+        // Source struct is `aisix_core::TelemetryTags`; the wire
+        // shape is flat strings + a bool, with skip_serializing_if
+        // covering legacy PKs that pre-date attribution.
+        // Each operator-defined string is run through `sanitize_tag`
+        // as defence-in-depth against log/JSON injection downstream
+        // (PR #382 audit MEDIUM-3; admission-side cap tracked
+        // separately).
+        provider_kind: sanitize_tag(tags.kind.unwrap_or_default()),
+        provider_featured: tags.featured,
+        branded_provider: sanitize_tag(tags.branded_provider.unwrap_or_default()),
+        pk_label: sanitize_tag(tags.pk_label.unwrap_or_default()),
+        byo_label: sanitize_tag(tags.byo_label.unwrap_or_default()),
     };
     state.usage_sink.try_emit(event.clone());
     // Per-env OTLP/HTTP fan-out. The snapshot's exporter table is
     // empty for envs that haven't configured any, so this is a cheap
     // no-op on the common path. Spawned tasks own the POST work and
     // never block the request return.
-    let snap = state.snapshot.load();
     let exporters = snap.observability_exporters.entries();
     state
         .otlp_fan_out
         .fan_out(&event, exporters.iter().map(|e| &e.value));
+}
+
+/// Defence-in-depth sanitiser for operator-defined `ProviderKey
+/// .telemetry_tags` string fields before they hit the wire.
+///
+/// Tag values are operator-controlled (set via the dashboard's
+/// provider-key form, persisted in etcd). A malicious operator with
+/// PK-write privileges could craft a label like
+/// `"production\u{0a}injected-internal-key: secret"` that, while
+/// safely JSON-escaped on this gateway↔cp-api hop, may forge log
+/// lines or muddle downstream consumers (cp-api logs, dashboards,
+/// log-aggregation pipelines) if any of them ever uses
+/// non-strict line-oriented parsing.
+///
+/// We mitigate two ways:
+///   1. Strip ASCII control characters (`\n`, `\r`, `\0`, etc.)
+///   2. Cap length at 256 chars
+///
+/// The right place to enforce this in depth is at PK admission
+/// (cp-api / dashboard validation on `display_name` / tag fields).
+/// This sanitiser is a belt-and-suspenders guard on the emit side
+/// — it cannot prevent a malicious tag from being *stored*, but it
+/// can prevent the stored value from corrupting downstream logs.
+///
+/// PR #382 audit MEDIUM-3.
+pub(crate) fn sanitize_tag(s: String) -> String {
+    if s.is_empty() {
+        return s;
+    }
+    s.chars().filter(|c| !c.is_control()).take(256).collect()
 }
 
 /// Provider-detail bundle for `emit_usage_event`. Grouped here so the
@@ -1675,6 +1747,15 @@ struct UsageExtras {
     cache_hit_saved_output_tokens: u32,
     ttft_ms: u32,
     routing: RoutingTelemetry,
+    /// UUID of the resolved ProviderKey. Used at emit time to look up
+    /// `telemetry_tags` from the snapshot and populate UsageEvent's
+    /// per-PK attribution fields (`provider_kind` / `provider_featured`
+    /// / `branded_provider` / `pk_label` / `byo_label`).
+    /// Empty for pre-dispatch error paths (auth fail, guardrail block
+    /// before dispatch) where no ProviderKey was resolved — those
+    /// emit events land in cp-api with the tag columns NULL.
+    /// See AISIX-Cloud#436 / #302 M17.
+    provider_key_id: String,
 }
 
 fn record_error(metrics: &Metrics, err: &ProxyError, model: &str, status: u16, elapsed: Duration) {
@@ -2359,5 +2440,46 @@ mod filter_tests {
             }
             _ => panic!("expected Selected for cooldown-only"),
         }
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tag_tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_tag_empty_stays_empty() {
+        assert_eq!(sanitize_tag(String::new()), "");
+    }
+
+    #[test]
+    fn sanitize_tag_strips_newlines_carriage_returns_and_nul() {
+        // Injection attempt: a label that, if echoed verbatim into a
+        // line-oriented log on the cp-api side, would forge an
+        // "injected-internal-key: secret" line. Sanitiser must strip
+        // all control chars including \r and \0.
+        let evil = "production\ninjected-internal-key: secret\r\0".to_string();
+        let safe = sanitize_tag(evil);
+        assert!(!safe.contains('\n'));
+        assert!(!safe.contains('\r'));
+        assert!(!safe.contains('\0'));
+        // Visible chars survive untouched.
+        assert!(safe.starts_with("production"));
+        assert!(safe.contains("injected-internal-key: secret"));
+    }
+
+    #[test]
+    fn sanitize_tag_caps_length_at_256() {
+        let huge = "a".repeat(10_000);
+        let safe = sanitize_tag(huge);
+        assert_eq!(safe.len(), 256);
+    }
+
+    #[test]
+    fn sanitize_tag_preserves_normal_ascii_and_unicode() {
+        // Real-world labels include hyphens, slashes, spaces, and
+        // non-ASCII (operator might label a team in their language).
+        let normal = "team-α / prod-east-1".to_string();
+        assert_eq!(sanitize_tag(normal.clone()), normal);
     }
 }
