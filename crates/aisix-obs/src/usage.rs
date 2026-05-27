@@ -281,27 +281,59 @@ fn is_false(b: &bool) -> bool {
 /// by an mpsc::Sender; `try_emit` is non-blocking and silently drops
 /// the event if the worker's queue is full (avoids back-pressuring
 /// the request hot path on a wedged CP). Drops are counted via
-/// tracing::warn! so observers can see a wedge.
+/// tracing::warn! and (when a `Metrics` handle is attached) the
+/// `aisix_usage_event_drops_total{reason}` prometheus counter so
+/// observers can see a wedge.
 ///
 /// In a deployment without CP-side telemetry (legacy / dev), the
 /// handle's `tx` is `None` and `try_emit` is a no-op.
+///
+/// Issue #408: the sink also bumps `aisix_usage_events_emitted_total
+/// {handler, status_code, inbound_protocol}` on every call so e2e
+/// can externally assert emission without a cp-api receiver in the
+/// loop. Counter is bumped on emission *intent* (i.e. every call to
+/// `try_emit`); drops counter is the subset that failed to enqueue.
+/// Invariant (audit HIGH-1): `emitted == delivered + dropped`. Every
+/// emit increments exactly one of these:
+/// - delivered: channel accepted the event
+/// - dropped (reason=sink_full): worker overloaded
+/// - dropped (reason=sink_closed): worker shut down
+/// - dropped (reason=sink_disabled): no sink wired (legacy / dev mode)
 #[derive(Debug, Clone)]
 pub struct UsageSink {
     tx: Option<tokio::sync::mpsc::Sender<UsageEvent>>,
+    metrics: Option<crate::metrics::Metrics>,
 }
 
 impl UsageSink {
     /// Build a real sink backed by an mpsc::Sender. The receiving end
-    /// is owned by the worker spawned in aisix-server.
+    /// is owned by the worker spawned in aisix-server. No prometheus
+    /// counter wiring until `with_metrics` is also called.
     pub fn new(tx: tokio::sync::mpsc::Sender<UsageEvent>) -> Self {
-        Self { tx: Some(tx) }
+        Self {
+            tx: Some(tx),
+            metrics: None,
+        }
     }
 
     /// Build a no-op sink. `try_emit` drops events silently — used
     /// when the DP runs without a configured CP (dev / standalone
     /// modes) so handlers don't have to special-case Optional fields.
     pub fn disabled() -> Self {
-        Self { tx: None }
+        Self {
+            tx: None,
+            metrics: None,
+        }
+    }
+
+    /// Attach a Metrics handle so `try_emit` bumps the #408 emission
+    /// and drops counters. Optional — without it, the sink behaves
+    /// exactly as the pre-#408 sink (channel send only, no counters).
+    /// The server bootstrap calls this in managed mode after building
+    /// the shared `Metrics` instance.
+    pub fn with_metrics(mut self, metrics: crate::metrics::Metrics) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Non-blocking emit. Returns immediately:
@@ -311,13 +343,54 @@ impl UsageSink {
     ///   error to the caller — request handlers must NOT fail because
     ///   telemetry can't keep up.
     /// - `Ok(())` no-op on a `disabled()` sink.
-    pub fn try_emit(&self, event: UsageEvent) {
-        let Some(tx) = &self.tx else { return };
+    ///
+    /// `handler` is a fixed-set label for the prometheus
+    /// `aisix_usage_events_emitted_total` counter (#408): `"chat"`,
+    /// `"embeddings"`, `"messages"`, `"responses"`, etc. Keep it
+    /// `&'static str` so cardinality stays bounded.
+    pub fn try_emit(&self, handler: &'static str, event: UsageEvent) {
+        // Normalise inbound_protocol to a fixed `&'static str` set at
+        // the boundary (audit MEDIUM-3). This both kills the heap
+        // alloc per call AND pins prometheus cardinality at the type
+        // level: a future caller that sets `event.inbound_protocol`
+        // to user-controlled data still produces a bounded label.
+        let bounded_protocol: &'static str = match event.inbound_protocol.as_str() {
+            "openai" => "openai",
+            "anthropic" => "anthropic",
+            _ => "other",
+        };
+
+        // Bump the emit counter on *intent* — handler tried to emit.
+        // Audit HIGH-1: paired with a drops counter bump on every
+        // failure path (including `sink_disabled`) so the invariant
+        // `emitted == delivered + dropped` holds strictly.
+        if let Some(m) = &self.metrics {
+            m.record_usage_event_emit(handler, event.status_code, bounded_protocol);
+        }
+
+        let Some(tx) = &self.tx else {
+            // No sink wired (legacy / dev mode). Counted as a drop
+            // with reason=sink_disabled so operators can see "DP
+            // intended to emit but no sink was wired" — silent
+            // zeros would otherwise hide the misconfiguration.
+            if let Some(m) = &self.metrics {
+                m.record_usage_event_drop("sink_disabled");
+            }
+            return;
+        };
+
         if let Err(err) = tx.try_send(event) {
-            // Both `Full` and `Closed` end up here. Full = worker is
-            // overloaded; Closed = worker shut down cleanly. Either
-            // way the event is gone — log once per drop and move on.
-            tracing::warn!(error = %err, "usage event dropped (sink full or closed)");
+            // `Full` = worker is overloaded; `Closed` = worker shut
+            // down cleanly. Either way the event is gone — record the
+            // distinction so the operator knows *why* the wedge.
+            let reason = match err {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => "sink_full",
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => "sink_closed",
+            };
+            if let Some(m) = &self.metrics {
+                m.record_usage_event_drop(reason);
+            }
+            tracing::warn!(reason = reason, "usage event dropped");
         }
     }
 }
@@ -331,16 +404,16 @@ mod tests {
         let sink = UsageSink::disabled();
         // Doesn't panic; doesn't allocate a worker. Two emits in a
         // row also fine.
-        sink.try_emit(sample_event("req-1"));
-        sink.try_emit(sample_event("req-2"));
+        sink.try_emit("test", sample_event("req-1"));
+        sink.try_emit("test", sample_event("req-2"));
     }
 
     #[tokio::test]
     async fn emit_into_real_channel_arrives_in_order() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let sink = UsageSink::new(tx);
-        sink.try_emit(sample_event("req-a"));
-        sink.try_emit(sample_event("req-b"));
+        sink.try_emit("test", sample_event("req-a"));
+        sink.try_emit("test", sample_event("req-b"));
         let a = rx.recv().await.unwrap();
         let b = rx.recv().await.unwrap();
         assert_eq!(a.request_id, "req-a");
@@ -354,8 +427,243 @@ mod tests {
         // hot path.
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let sink = UsageSink::new(tx);
-        sink.try_emit(sample_event("req-1"));
-        sink.try_emit(sample_event("req-2")); // dropped, logged
+        sink.try_emit("test", sample_event("req-1"));
+        sink.try_emit("test", sample_event("req-2")); // dropped, logged
+    }
+
+    /// Issue #408: a `try_emit` call with a Metrics handle attached
+    /// must bump `aisix_usage_events_emitted_total` exactly once per
+    /// call. The status_code label is bucketed (2xx / 4xx / 5xx)
+    /// rather than raw to keep prometheus cardinality bounded.
+    #[tokio::test]
+    async fn emits_counter_increments_per_call() {
+        let metrics = crate::metrics::Metrics::new(false);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let sink = UsageSink::new(tx).with_metrics(metrics.clone());
+
+        sink.try_emit(
+            "chat",
+            UsageEvent {
+                status_code: 200,
+                inbound_protocol: "openai".into(),
+                ..Default::default()
+            },
+        );
+        sink.try_emit(
+            "embeddings",
+            UsageEvent {
+                status_code: 200,
+                inbound_protocol: "openai".into(),
+                ..Default::default()
+            },
+        );
+
+        let rendered = metrics.render();
+        // The exact text format is metrics-rs's choice; assert both
+        // the metric name and label combinations are present, and
+        // value reaches 1 per (handler, status_code, inbound_protocol).
+        assert!(
+            rendered.contains("aisix_usage_events_emitted_total"),
+            "counter must appear in scrape:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("handler=\"chat\"") && rendered.contains("handler=\"embeddings\""),
+            "per-handler labels must be present:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("status_code=\"2xx\""),
+            "status_code must be bucketed (2xx), not raw 200:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("inbound_protocol=\"openai\""),
+            "inbound_protocol label must be present:\n{rendered}",
+        );
+    }
+
+    /// Issue #408 audit HIGH-2: when `try_send` fails the emit
+    /// counter still bumps for *intent* and the drops counter
+    /// bumps for *outcome*. Strict numeric invariant pinned:
+    /// `emit_total == delivered + drops_total`. After two calls
+    /// (one delivered, one dropped on a capacity-1 channel) the
+    /// scrape must show `emit_total == 2` and `drops_total == 1`.
+    /// A regression that double-bumped emit on drop, or skipped
+    /// emit when the channel rejected, would fail here.
+    #[tokio::test]
+    async fn dropped_event_records_reason_and_keeps_emit_count() {
+        let metrics = crate::metrics::Metrics::new(false);
+        let (tx, _rx) = tokio::sync::mpsc::channel(1); // capacity 1
+        let sink = UsageSink::new(tx).with_metrics(metrics.clone());
+
+        let event = || UsageEvent {
+            status_code: 200,
+            inbound_protocol: "openai".into(),
+            ..Default::default()
+        };
+
+        sink.try_emit("chat", event()); // delivered
+        sink.try_emit("chat", event()); // dropped (channel full)
+
+        let rendered = metrics.render();
+        // Numeric assertions (audit HIGH-2): name-only checks let a
+        // double-bump regression through. Pin exact values.
+        let emit_value = parse_counter_value(
+            &rendered,
+            "aisix_usage_events_emitted_total",
+            &[("handler", "chat"), ("status_code", "2xx")],
+        );
+        assert_eq!(emit_value, 2, "emit must be exactly 2:\n{rendered}");
+
+        let drop_value = parse_counter_value(
+            &rendered,
+            "aisix_usage_event_drops_total",
+            &[("reason", "sink_full")],
+        );
+        assert_eq!(
+            drop_value, 1,
+            "drops_total{{reason=sink_full}} must be exactly 1:\n{rendered}",
+        );
+    }
+
+    /// Issue #408 audit MEDIUM-1: the `sink_closed` reason path must
+    /// be covered independently of `sink_full`. A future refactor that
+    /// swapped the labels would only be caught by exercising both
+    /// arms of the match.
+    #[tokio::test]
+    async fn dropped_event_with_closed_receiver_records_sink_closed_reason() {
+        let metrics = crate::metrics::Metrics::new(false);
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        drop(rx); // close the receiver before any send
+        let sink = UsageSink::new(tx).with_metrics(metrics.clone());
+
+        sink.try_emit(
+            "chat",
+            UsageEvent {
+                status_code: 200,
+                inbound_protocol: "openai".into(),
+                ..Default::default()
+            },
+        );
+
+        let rendered = metrics.render();
+        let drop_value = parse_counter_value(
+            &rendered,
+            "aisix_usage_event_drops_total",
+            &[("reason", "sink_closed")],
+        );
+        assert_eq!(
+            drop_value, 1,
+            "drops_total{{reason=sink_closed}} must be 1 when receiver was dropped:\n{rendered}",
+        );
+    }
+
+    /// Issue #408 audit HIGH-1: a `disabled()` sink with metrics
+    /// attached must still preserve `emitted == delivered + dropped`.
+    /// The drop is recorded with `reason=sink_disabled` so operators
+    /// can see "DP intended to emit but no sink was wired" rather
+    /// than silent zeros.
+    #[tokio::test]
+    async fn disabled_sink_with_metrics_records_sink_disabled_drop() {
+        let metrics = crate::metrics::Metrics::new(false);
+        let sink = UsageSink::disabled().with_metrics(metrics.clone());
+
+        sink.try_emit(
+            "chat",
+            UsageEvent {
+                status_code: 200,
+                inbound_protocol: "openai".into(),
+                ..Default::default()
+            },
+        );
+        sink.try_emit(
+            "chat",
+            UsageEvent {
+                status_code: 200,
+                inbound_protocol: "openai".into(),
+                ..Default::default()
+            },
+        );
+
+        let rendered = metrics.render();
+        // Both calls bump emit; both calls bump drop with sink_disabled.
+        // Invariant: emit (2) == delivered (0) + drops (2).
+        let emit_value = parse_counter_value(
+            &rendered,
+            "aisix_usage_events_emitted_total",
+            &[("handler", "chat"), ("status_code", "2xx")],
+        );
+        assert_eq!(
+            emit_value, 2,
+            "emit must be 2 even on disabled sink:\n{rendered}"
+        );
+
+        let drop_value = parse_counter_value(
+            &rendered,
+            "aisix_usage_event_drops_total",
+            &[("reason", "sink_disabled")],
+        );
+        assert_eq!(
+            drop_value, 2,
+            "drops_total{{reason=sink_disabled}} must be 2:\n{rendered}",
+        );
+    }
+
+    /// Issue #408 audit MEDIUM-3: a wire-level `inbound_protocol`
+    /// outside the documented set must be normalised to `"other"`
+    /// rather than landing on the metric as a user-controlled
+    /// cardinality vector. This pins the boundary defence.
+    #[tokio::test]
+    async fn unknown_inbound_protocol_buckets_into_other() {
+        let metrics = crate::metrics::Metrics::new(false);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let sink = UsageSink::new(tx).with_metrics(metrics.clone());
+
+        sink.try_emit(
+            "chat",
+            UsageEvent {
+                status_code: 200,
+                // A future / out-of-spec value that some future
+                // caller might set. Must NOT land on the wire as a
+                // label value.
+                inbound_protocol: "evil-cardinality-bomb".into(),
+                ..Default::default()
+            },
+        );
+
+        let rendered = metrics.render();
+        assert!(
+            !rendered.contains("evil-cardinality-bomb"),
+            "user-controlled inbound_protocol must not leak into the label:\n{rendered}",
+        );
+        assert!(
+            rendered.contains("inbound_protocol=\"other\""),
+            "unknown inbound_protocol must bucket to \"other\":\n{rendered}",
+        );
+    }
+
+    /// Helper: pull the integer counter value from a prometheus
+    /// scrape, matching by metric name and all required label pairs.
+    /// Returns 0 if no matching line. Robust to label ordering in
+    /// the scrape output.
+    #[cfg(test)]
+    fn parse_counter_value(scrape: &str, name: &str, labels: &[(&str, &str)]) -> u64 {
+        for line in scrape.lines() {
+            if !line.starts_with(&format!("{name}{{")) {
+                continue;
+            }
+            let all_match = labels
+                .iter()
+                .all(|(k, v)| line.contains(&format!("{k}=\"{v}\"")));
+            if !all_match {
+                continue;
+            }
+            // Format: `metric{labels} <value>`
+            if let Some(value_str) = line.rsplit_once(' ').map(|(_, v)| v.trim()) {
+                if let Ok(v) = value_str.parse::<u64>() {
+                    return v;
+                }
+            }
+        }
+        0
     }
 
     #[test]

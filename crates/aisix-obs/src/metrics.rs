@@ -59,6 +59,20 @@ pub const M_BUDGET_RESET_SECONDS: &str = "aisix_budget_reset_seconds";
 pub const M_BUDGET_DETAILS_PRESENT: &str = "aisix_budget_details_present";
 pub const M_REDIS_FAILURES_TOTAL: &str = "aisix_redis_failures_total";
 pub const M_USAGE_EVENT_DROPS_TOTAL: &str = "aisix_usage_event_drops_total";
+/// Issue #408: counter for UsageEvents successfully enqueued onto the
+/// `UsageSink` (i.e. handed off to the telemetry worker for delivery
+/// to cp-api + per-env OTLP exporters). Operators slice this by:
+/// - `handler`: which OpenAI-shape handler emitted (chat /
+///   embeddings / responses / completions / rerank / audio /
+///   images / messages). Fixed enumeration, low cardinality.
+/// - `status_code`: bucketed as `2xx` / `4xx` / `5xx` (avoid the
+///   1000-value cardinality blowup of raw u16 codes).
+/// - `inbound_protocol`: `openai` / `anthropic`. Matches the
+///   wire-level field on UsageEvent.
+///
+/// Paired with `aisix_usage_event_drops_total{reason}` for the
+/// `try_send` failure paths (sink full / closed).
+pub const M_USAGE_EVENT_EMITS_TOTAL: &str = "aisix_usage_events_emitted_total";
 pub const M_OTLP_FANOUT_DROPS_TOTAL: &str = "aisix_otlp_fanout_drops_total";
 pub const M_OTLP_FANOUT_FAILURES_TOTAL: &str = "aisix_otlp_fanout_failures_total";
 
@@ -388,6 +402,36 @@ impl Metrics {
         });
     }
 
+    /// Issue #408: bump on every `UsageSink::try_emit` call (the
+    /// handler's emission intent — paired with the drops counter so
+    /// the invariant `emitted == delivered + dropped` holds strictly).
+    ///
+    /// All three labels are `&'static str` so prometheus cardinality
+    /// is type-system-bounded:
+    /// - `handler`: OpenAI-shape endpoint name (`chat`, `embeddings`,
+    ///   `messages`, etc.)
+    /// - `status_code`: bucketed by `status_bucket()` (one of `2xx` /
+    ///   `3xx` / `4xx` / `5xx` / `other`) — never a raw u16
+    /// - `inbound_protocol`: normalised by the caller to one of
+    ///   `"openai"` / `"anthropic"` / `"other"` (audit MEDIUM-3 —
+    ///   `&'static str` here prevents user-controlled cardinality)
+    pub fn record_usage_event_emit(
+        &self,
+        handler: &'static str,
+        status_code: u16,
+        inbound_protocol: &'static str,
+    ) {
+        metrics::with_local_recorder(&self.inner.recorder, || {
+            metrics::counter!(
+                M_USAGE_EVENT_EMITS_TOTAL,
+                "handler" => handler,
+                "status_code" => status_bucket(status_code),
+                "inbound_protocol" => inbound_protocol,
+            )
+            .increment(1);
+        });
+    }
+
     pub fn record_otlp_fanout_drop(&self, exporter: &str, reason: &str) {
         metrics::with_local_recorder(&self.inner.recorder, || {
             metrics::counter!(
@@ -404,6 +448,21 @@ impl Metrics {
             metrics::counter!(M_OTLP_FANOUT_FAILURES_TOTAL, "exporter" => exporter.to_string())
                 .increment(1);
         });
+    }
+}
+
+/// Bucket an HTTP status code into one of `2xx` / `3xx` / `4xx` /
+/// `5xx` / `other` (the last covers 1xx and out-of-range). Used by
+/// the UsageEvent emission counter (#408) to keep prometheus label
+/// cardinality bounded — raw `u16` would explode to ~1000 series per
+/// handler×protocol combination.
+fn status_bucket(status: u16) -> &'static str {
+    match status {
+        200..=299 => "2xx",
+        300..=399 => "3xx",
+        400..=499 => "4xx",
+        500..=599 => "5xx",
+        _ => "other",
     }
 }
 
@@ -820,5 +879,31 @@ mod tests {
             rendered.contains(" 0"),
             "expected gauge to return to zero:\n{rendered}"
         );
+    }
+
+    /// Issue #408 audit MEDIUM-2: pin every boundary of
+    /// `status_bucket` so an off-by-one (e.g. `200..299` excluding
+    /// 299) would surface as a CI failure rather than slipping
+    /// past as silent re-labelling. Covers all 5 buckets including
+    /// the dead-code `3xx` / `other` arms which have no live caller
+    /// today.
+    #[test]
+    fn status_bucket_boundaries_are_inclusive() {
+        // 2xx
+        assert_eq!(status_bucket(200), "2xx");
+        assert_eq!(status_bucket(299), "2xx");
+        // 3xx
+        assert_eq!(status_bucket(300), "3xx");
+        assert_eq!(status_bucket(399), "3xx");
+        // 4xx
+        assert_eq!(status_bucket(400), "4xx");
+        assert_eq!(status_bucket(499), "4xx");
+        // 5xx
+        assert_eq!(status_bucket(500), "5xx");
+        assert_eq!(status_bucket(599), "5xx");
+        // out-of-range → other
+        assert_eq!(status_bucket(199), "other");
+        assert_eq!(status_bucket(600), "other");
+        assert_eq!(status_bucket(0), "other");
     }
 }
