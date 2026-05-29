@@ -308,6 +308,20 @@ pub struct UsageStats {
     /// counter on top of input_tokens.
     #[serde(default)]
     pub cache_read_tokens: u32,
+    /// DeepSeek-native `prompt_cache_hit_tokens`, preserved verbatim
+    /// for client passthrough (#542). The canonical `cached_prompt_tokens`
+    /// above carries the *normalized* (OpenAI-shape) cache-hit count for
+    /// all providers; this Option carries the raw provider-native field
+    /// so a DeepSeek-aware client reading the native name still works.
+    /// `None` for providers that don't emit it — distinct from a real
+    /// `Some(0)` so the renderer only emits the field when the upstream
+    /// actually sent it. Bounded allowlist, not arbitrary passthrough.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_hit_tokens: Option<u32>,
+    /// DeepSeek-native `prompt_cache_miss_tokens`, preserved verbatim
+    /// (#542). See `prompt_cache_hit_tokens`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_miss_tokens: Option<u32>,
 }
 
 impl UsageStats {
@@ -609,6 +623,33 @@ mod tests {
     fn usage_stats_saturates_total() {
         let u = UsageStats::new(u32::MAX, 10);
         assert_eq!(u.total_tokens, u32::MAX);
+    }
+
+    /// PR #442 audit MEDIUM-4 (forward-compat): an *old-shape*
+    /// `UsageStats` JSON — written before the #542 native cache fields
+    /// existed — must still deserialize cleanly into the new struct,
+    /// defaulting the new Option fields to `None`. This pins the
+    /// new-DP-reads-old-cache direction of a mixed-version rolling
+    /// deploy (the `ChatResponse` type is persisted to the Redis cache).
+    /// The reverse direction (old DP reading new-shape) is bounded +
+    /// documented in the PR body.
+    #[test]
+    fn usage_stats_deserializes_old_shape_without_native_cache_fields() {
+        let old = r#"{
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "cached_prompt_tokens": 40,
+            "reasoning_tokens": 5,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0
+        }"#;
+        let u: UsageStats =
+            serde_json::from_str(old).expect("old-shape UsageStats must deserialize");
+        assert_eq!(u.prompt_tokens, 100);
+        assert_eq!(u.cached_prompt_tokens, 40);
+        assert_eq!(u.prompt_cache_hit_tokens, None);
+        assert_eq!(u.prompt_cache_miss_tokens, None);
     }
 
     #[test]
