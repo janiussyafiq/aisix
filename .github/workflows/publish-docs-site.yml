@@ -1,0 +1,23 @@
+name: Publish docs.api7.ai
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+
+jobs:
+  dispatch-docs-site:
+    runs-on: ubicloud-standard-2
+    steps:
+      - name: Trigger docs site production deploy
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.APISIX_WEBSITE_GITHUB_TOKEN }}
+          repository: api7/docs
+          event-type: ai-gateway-docs-updated
+          client-payload: >-
+            {
+              "ai_gateway_sha": "${{ github.sha }}",
+              "ai_gateway_ref": "${{ github.ref_name }}"
+            }
