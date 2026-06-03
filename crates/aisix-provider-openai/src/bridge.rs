@@ -129,7 +129,7 @@ impl OpenAiBridge {
                          provider_metadata.api_base_url on the control plane; standalone: \
                          directly on the resource)."
                     );
-                    return Err(BridgeError::Config(format!(
+                    return Err(BridgeError::InvalidUpstreamConfig(format!(
                         "provider_key for vendor {pk_vendor_raw:?} has no upstream base URL \
                          configured"
                     )));
@@ -201,17 +201,27 @@ fn normalize_canonical_openai(base: &str) -> String {
 fn api_key(ctx: &BridgeContext) -> Result<&str, BridgeError> {
     let k = &ctx.provider_key.secret;
     if k.is_empty() {
-        Err(BridgeError::Config("provider_key.secret is empty".into()))
-    } else {
-        Ok(k.as_str())
+        return Err(BridgeError::InvalidUpstreamConfig(
+            "provider_key.secret is empty".into(),
+        ));
     }
+    // Reject a secret that can't be a valid Authorization header value
+    // (control bytes etc.) up front as customer-fixable config. Several
+    // endpoints build the `Bearer {key}` header inline rather than via
+    // build_request_headers, so validating here covers them all (#367).
+    if HeaderValue::from_str(k).is_err() {
+        return Err(BridgeError::InvalidUpstreamConfig(
+            "provider_key.secret contains invalid header characters".into(),
+        ));
+    }
+    Ok(k.as_str())
 }
 
 fn upstream_model(ctx: &BridgeContext) -> Result<&str, BridgeError> {
     ctx.model
         .model_name
         .as_deref()
-        .ok_or_else(|| BridgeError::Config("model.model_name missing".into()))
+        .ok_or_else(|| BridgeError::InvalidUpstreamConfig("model.model_name missing".into()))
 }
 
 async fn map_http_error(status: StatusCode, resp: reqwest::Response) -> BridgeError {
@@ -283,8 +293,8 @@ where
 /// out the apply order: `param_renames` → `param_constraints` →
 /// `default_body_fields` (request side), `content_list_to_string`
 /// (response side flag, but it transforms the *request* body before
-/// send when the upstream only accepts string content per LiteLLM's
-/// convention). Anything not configured is a no-op.
+/// send when the upstream only accepts string content per the common
+/// gateway convention). Anything not configured is a no-op.
 fn prepare_outbound_body<T: serde::Serialize>(
     typed: &T,
     request: Option<&RequestOverrides>,
@@ -332,8 +342,9 @@ fn build_request_headers(
     request: Option<&RequestOverrides>,
 ) -> Result<HeaderMap, BridgeError> {
     let mut headers = HeaderMap::new();
-    let auth = HeaderValue::from_str(&format!("Bearer {api_key_str}"))
-        .map_err(|e| BridgeError::Config(format!("api key contains invalid header chars: {e}")))?;
+    let auth = HeaderValue::from_str(&format!("Bearer {api_key_str}")).map_err(|e| {
+        BridgeError::InvalidUpstreamConfig(format!("api key contains invalid header chars: {e}"))
+    })?;
     headers.insert(header::AUTHORIZATION, auth);
     headers.insert(
         header::CONTENT_TYPE,
@@ -1074,7 +1085,7 @@ mod tests {
         let bridge = OpenAiBridge::new();
         let ctx = BridgeContext::new("req-1", sample_model(), Arc::new(pk));
         let err = bridge.chat(&req(), &ctx).await.unwrap_err();
-        assert!(matches!(err, BridgeError::Config(_)));
+        assert!(matches!(err, BridgeError::InvalidUpstreamConfig(_)));
     }
 
     #[tokio::test]
@@ -1194,7 +1205,7 @@ data: [DONE]\n\n";
             let ctx = BridgeContext::new("rid", sample_model(), Arc::new(pk));
             let err = bridge.resolve_base(&ctx).unwrap_err();
             match err {
-                BridgeError::Config(msg) => {
+                BridgeError::InvalidUpstreamConfig(msg) => {
                     assert!(
                         msg.contains("base URL") && msg.contains(vendor.trim()),
                         "vendor {vendor:?}: error must name vendor + base URL; got: {msg}",
@@ -1210,7 +1221,9 @@ data: [DONE]\n\n";
                         );
                     }
                 }
-                other => panic!("vendor {vendor:?}: expected BridgeError::Config, got {other:?}"),
+                other => {
+                    panic!("vendor {vendor:?}: expected InvalidUpstreamConfig, got {other:?}")
+                }
             }
         }
     }
@@ -1335,7 +1348,7 @@ data: [DONE]\n\n";
     /// `param_renames` must rewrite the outbound body key. Build a
     /// request with `max_tokens=64`; configure rename
     /// `max_tokens → max_completion_tokens`; the bytes leaving the
-    /// bridge must carry the renamed key (LiteLLM source-wins).
+    /// bridge must carry the renamed key (source-wins convention).
     #[tokio::test]
     async fn chat_applies_param_renames_to_outbound_body() {
         use wiremock::matchers::body_partial_json;
@@ -1471,7 +1484,7 @@ data: [DONE]\n\n";
 
     /// `content_list_to_string=true` flattens the request body's
     /// `messages[*].content` array of text blocks into a string
-    /// before send (LiteLLM convention — applies to the request).
+    /// before send (common gateway convention — applies to the request).
     /// The outbound body must carry `content: "abc"`, not the array.
     #[tokio::test]
     async fn chat_content_list_to_string_flattens_text_blocks_in_outbound_body() {

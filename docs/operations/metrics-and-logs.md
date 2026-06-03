@@ -8,7 +8,7 @@ AISIX AI Gateway exposes observability through metrics, logs, response
 headers, usage events, and optional exporter fan-out. Use these signals
 together; no single signal explains every failure mode.
 
-## Start with the right observability signal
+## Observability Signals
 
 Start with Prometheus metrics when you need trends: request volume,
 latency, rate-limit outcomes, token counters, cost counters, and exporter
@@ -27,7 +27,7 @@ cost, budgets, and Cloud billing flows.
 Use OTLP exporters when telemetry needs to leave the data plane and flow
 into an external collector.
 
-## Prometheus metrics
+## Prometheus Metrics
 
 `GET /metrics` on the admin listener is the default Prometheus scrape
 endpoint. Operators can change the path with
@@ -44,25 +44,22 @@ request, then check again for series such as `aisix_requests_total` and
 `aisix_tokens_consumed_total`.
 :::
 
-AISIX emits native metric names with the `aisix_` prefix. Common metric
-families include:
+AISIX emits native metric names with the `aisix_` prefix.
 
-- request volume and latency, such as `aisix_requests_total` and
-  `aisix_request_duration_seconds`
-- token and cost counters, such as `aisix_llm_input_tokens_total`,
-  `aisix_llm_output_tokens_total`, and `aisix_llm_spend_micro_usd_total`
-- rate-limit and budget signals, such as
-  `aisix_ratelimit_rejections_total` and budget gauges
-- proxy health and in-flight request signals
-- routing, cache, Redis, usage-event, and exporter health signals when
-  those paths are used
+| Metric category | Examples |
+| --- | --- |
+| Request volume and latency | `aisix_requests_total`, `aisix_request_duration_seconds`, `aisix_llm_requests_total`, `aisix_llm_request_duration_seconds`, `aisix_llm_time_to_first_token_seconds` |
+| Usage and cost | `aisix_tokens_consumed_total`, `aisix_llm_input_tokens_total`, `aisix_llm_output_tokens_total`, `aisix_llm_total_tokens_total`, `aisix_llm_spend_micro_usd_total` |
+| Rate limits and budgets | `aisix_ratelimit_rejections_total`, `aisix_ratelimit_remaining_requests`, `aisix_ratelimit_remaining_tokens`, budget gauges, `aisix_budget_details_present` |
+| Proxy health | `aisix_proxy_requests_total`, `aisix_proxy_failed_requests_total`, `aisix_proxy_request_duration_seconds`, `aisix_proxy_in_flight_requests` |
+| Routing, cache, and exporters | `aisix_deployment_*`, `aisix_routing_*`, Redis, usage-event drop, and OTLP fan-out drop or failure counters |
 
 Labels are limited to values the data plane can reliably know, such as
 `endpoint`, `inbound_protocol`, `provider`, `model`, `upstream_model`,
 `provider_key_id`, `api_key_id`, `team_id`, `user_id`, `status`, and
 `outcome`.
 
-## Managed data-plane metrics
+## Managed Data-Plane Metrics
 
 The local `/metrics` endpoint lives on the admin listener. A Cloud
 managed data plane does not bind the standalone admin listener and does
@@ -72,7 +69,7 @@ To export metrics or telemetry from a managed data plane, configure an
 OTLP exporter through AISIX Cloud. The data plane sends telemetry to the
 configured collector instead of waiting to be scraped locally.
 
-## Logs and usage events
+## Logs and Usage Events
 
 Access logs answer what happened to a single request. Metrics answer what
 is happening over time. Usage events answer what accounting-oriented
@@ -86,7 +83,7 @@ tracks time to actual output.
 `ttft_ms` is meaningful only on streaming paths. Non-streaming,
 cache-hit, and error paths do not emit a TTFT value.
 
-## Response headers
+## Response Headers
 
 Response headers can provide fast per-request hints:
 
@@ -118,7 +115,7 @@ evidence. Metrics can hide individual failures inside aggregates.
 Check exporter enablement, endpoint correctness, outbound connectivity
 from the data plane, and exporter drop/failure counters.
 
-## Next steps
+## Next Steps
 
 - [Observability exporters](/ai-gateway/configuration/observability-exporters)
   explains exporter resources.

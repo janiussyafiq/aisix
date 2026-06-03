@@ -542,11 +542,7 @@ async fn anthropic_passthrough_dispatch(
         let status_u16 = status.as_u16();
         let retry_after = aisix_gateway::parse_retry_after(upstream_resp.headers());
         let message = upstream_resp.text().await.unwrap_or_default();
-        let truncated = if message.len() > 1024 {
-            format!("{}…", &message[..1024])
-        } else {
-            message
-        };
+        let truncated = crate::util::truncate_on_char_boundary(&message, 1024);
         let err = aisix_gateway::BridgeError::upstream_status_with_retry_after(
             status_u16,
             truncated,
@@ -848,9 +844,8 @@ async fn cross_provider_dispatch(
             ProxyError::InvalidRequest(format!("model `{model_name}` has no provider prefix"))
         })?
         .to_string();
-    let bridge: Arc<dyn Bridge> =
-        crate::dispatch::resolve_bridge(&state.hub, provider_key, model.provider.as_deref())
-            .ok_or(ProxyError::ProviderUnavailable)?;
+    let bridge: Arc<dyn Bridge> = crate::dispatch::resolve_bridge(&state.hub, provider_key)
+        .ok_or(ProxyError::ProviderUnavailable)?;
 
     // Parse the Anthropic-shape body into the gateway's normalised
     // ChatFormat. Errors here are 400 — the request is malformed
@@ -1048,8 +1043,8 @@ fn build_anthropic_sse_stream(
         let mut first_chunk_seen = false;
         // Accumulate assistant text for the end-of-stream output guardrail
         // (#448). Bytes are forwarded live (mirrors /v1/chat/completions and
-        // LiteLLM's streaming guardrail), so a blocked response is signalled
-        // with a terminal `error` event rather than held back.
+        // the common streaming-guardrail pattern), so a blocked response is
+        // signalled with a terminal `error` event rather than held back.
         let mut content_text = String::new();
         // Also collect streamed tool-call fragments so tool-call output is
         // scanned too (parity with the non-streaming path). Fragments are
@@ -1667,7 +1662,7 @@ where
         // End-of-stream output guardrail (#448): scan the accumulated
         // assistant text. On a block, emit a terminal Anthropic `error`
         // event (bytes were already forwarded verbatim, mirroring the
-        // cross-provider path and LiteLLM's streaming guardrail).
+        // cross-provider path and the common streaming-guardrail pattern).
         if let Some(chain) = output_guardrail.as_ref() {
             let text = std::mem::take(&mut guard.usage().response_text);
             if !text.is_empty() {
@@ -2459,7 +2454,7 @@ data: [DONE]\n\n";
     /// customers branching on `e.body['error']['type']` against
     /// Anthropic-canonical strings stay portable. See
     /// `crate::error::anthropic_kind_from_status` for the
-    /// LiteLLM-aligned status→type mapping.
+    /// ecosystem-aligned status→type mapping.
     /// Strict envelope-shape helper used across every error-path
     /// test below — keeps regression coverage tight against a flip
     /// back to OpenAI shape (audit HIGH-2).

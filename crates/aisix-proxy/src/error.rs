@@ -38,7 +38,7 @@
 //!   taxonomy because the Anthropic SDK's `ErrorType` is a strict
 //!   literal — emitting `"upstream_error"` would silently break
 //!   customers branching on `e.body['error']['type']`. See
-//!   [`anthropic_kind_from_status`] for the LiteLLM-aligned mapping
+//!   [`anthropic_kind_from_status`] for the ecosystem-aligned mapping
 //!   table.
 //!
 //! `ProxyError` is the internal error taxonomy; it implements
@@ -243,6 +243,15 @@ impl ProxyError {
             // body carries (prd-09b §5.8 retry_after_seconds), so the
             // header and body agree — SDKs back off on the header.
             ProxyError::BudgetExceeded(r) => r.retry_after_seconds,
+            // Forward an upstream 429's Retry-After hint so SDK clients
+            // back off on the provider's actual cool-down instead of a
+            // default. The hint is parsed into `UpstreamStatus.retry_after`
+            // by the bridge; only 429 carries a meaningful value.
+            ProxyError::Bridge(BridgeError::UpstreamStatus {
+                status: 429,
+                retry_after: Some(d),
+                ..
+            }) => Some(d.as_secs()),
             _ => None,
         }
     }
@@ -367,10 +376,9 @@ struct AnthropicErrorBody {
 /// canonical strings on `error.type` are static-type violations for
 /// any customer doing `isinstance(e, anthropic.RateLimitError)` plus
 /// `e.body['error']['type'] == 'rate_limit_error'`. Per CLAUDE.md §7
-/// reference-implementation rule, this mapping mirrors LiteLLM's
-/// `anthropic_interface/exceptions/exception_mapping_utils.py`
-/// status-to-type table verbatim — divergence from the established
-/// ecosystem here would silently break Claude SDK users.
+/// reference-implementation rule, this mapping mirrors the established
+/// ecosystem's Anthropic status-to-type table verbatim — divergence from
+/// the established ecosystem here would silently break Claude SDK users.
 ///
 /// (The OpenAI envelope's inner `error.type` keeps the DP-stable
 /// strings per ai-gateway#327; that contract is unchanged on
@@ -399,7 +407,7 @@ impl ProxyError {
     /// Render this error as an Anthropic-shape `{type:"error", error:
     /// {type, message}}` HTTP response. Used by `/v1/messages` so the
     /// Anthropic SDK's envelope parser sees a shape the official
-    /// SDK + LiteLLM both treat as canonical.
+    /// SDK and the broader ecosystem both treat as canonical.
     ///
     /// **Inner `error.type` policy:** maps from the HTTP status code
     /// to the Anthropic SDK's `ErrorType` literal via
@@ -505,6 +513,37 @@ mod tests {
         let wrapped = ProxyError::Bridge(bridge_err);
         assert_eq!(wrapped.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(wrapped.kind(), "upstream_error");
+    }
+
+    #[test]
+    fn upstream_429_forwards_retry_after_hint() {
+        // An upstream 429 carrying a parsed Retry-After must surface
+        // through retry_after_secs so the response writer emits the
+        // header SDKs back off on (#144).
+        let wrapped = ProxyError::Bridge(BridgeError::upstream_status_with_retry_after(
+            429,
+            "rate limited",
+            Some(std::time::Duration::from_secs(30)),
+        ));
+        assert_eq!(wrapped.retry_after_secs(), Some(30));
+    }
+
+    #[test]
+    fn upstream_429_without_hint_has_no_retry_after() {
+        let wrapped = ProxyError::Bridge(BridgeError::upstream_status(429, "rate limited"));
+        assert_eq!(wrapped.retry_after_secs(), None);
+    }
+
+    #[test]
+    fn non_429_upstream_does_not_forward_retry_after() {
+        // Only 429 carries a meaningful hint; a stray Retry-After on a
+        // 5xx must not leak to the client.
+        let wrapped = ProxyError::Bridge(BridgeError::upstream_status_with_retry_after(
+            503,
+            "unavailable",
+            Some(std::time::Duration::from_secs(30)),
+        ));
+        assert_eq!(wrapped.retry_after_secs(), None);
     }
 
     #[test]

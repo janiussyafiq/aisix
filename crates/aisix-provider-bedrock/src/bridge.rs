@@ -199,8 +199,9 @@ const KNOWN_PUBLISHER_TAGS: &[&str] = &[
 
 impl BedrockPublisher {
     /// Resolve the publisher from the Bedrock model id, tolerating
-    /// cross-region inference profile prefixes (`us.`, `eu.`,
-    /// `apac.`, `global.`, `us-gov.`).
+    /// cross-region inference profile prefixes (`us.`, `eu.`, `apac.`,
+    /// `global.`, `us-gov.`, `au.`, `ca.`, `jp.`, …) — see
+    /// [`strip_region_prefix`] for the exact rule.
     pub fn from_model_id(model_id: &str) -> Option<Self> {
         let stripped = strip_region_prefix(model_id);
         let (publisher_tag, _rest) = stripped.split_once('.')?;
@@ -244,8 +245,15 @@ impl BedrockPublisher {
 
 /// Strip a leading cross-region inference profile prefix.
 ///
-/// Recognized prefixes (per AWS catalog as of 2026-05):
-/// `us.`, `eu.`, `apac.`, `global.`, `us-gov.`.
+/// Rather than hardcode AWS's region list (which grows over time),
+/// this strips any leading 2–7 char `[a-z0-9-]` token that is
+/// immediately followed by a known publisher tag. That covers every
+/// documented cross-region prefix without a code change when AWS adds
+/// a new region: `us.`, `eu.`, `apac.`, `global.`, `us-gov.`, `au.`
+/// (Australia), `ca.` (Canada), `jp.` (Japan), … The publisher-tag
+/// gate means a token that isn't a real prefix (no known publisher
+/// after it) is left untouched, so a plain `anthropic.claude-…` id is
+/// never mangled.
 fn strip_region_prefix(model_id: &str) -> &str {
     let Some((maybe_region, rest)) = model_id.split_once('.') else {
         return model_id;
@@ -298,7 +306,7 @@ impl BedrockSecret {
     /// generic shape errors.
     fn parse(secret: &str) -> Result<Self, BridgeError> {
         if secret.trim().is_empty() {
-            return Err(BridgeError::Config(
+            return Err(BridgeError::InvalidUpstreamConfig(
                 "bedrock provider_key.secret is empty — \
                  expected JSON {access_key_id, secret_access_key, region, session_token?}"
                     .into(),
@@ -310,7 +318,7 @@ impl BedrockSecret {
             // "invalid character 'X' at position N" reveals what's
             // in the JSON). Generic shape hint is enough for the
             // operator who controls the registration.
-            BridgeError::Config(
+            BridgeError::InvalidUpstreamConfig(
                 "bedrock provider_key.secret must be valid JSON: \
                  {access_key_id, secret_access_key, region, session_token?}"
                     .into(),
@@ -327,7 +335,7 @@ fn build_client(
     request: Option<&RequestOverrides>,
 ) -> Result<BedrockClient, BridgeError> {
     if creds.region.trim().is_empty() {
-        return Err(BridgeError::Config(
+        return Err(BridgeError::InvalidUpstreamConfig(
             "bedrock provider_key.secret.region is empty — \
              AWS Bedrock dispatch is region-keyed and requires e.g. \"us-west-2\""
                 .into(),
@@ -463,7 +471,7 @@ fn upstream_model(ctx: &BridgeContext) -> Result<&str, BridgeError> {
     ctx.model
         .model_name
         .as_deref()
-        .ok_or_else(|| BridgeError::Config("model.model_name missing".into()))
+        .ok_or_else(|| BridgeError::InvalidUpstreamConfig("model.model_name missing".into()))
 }
 
 /// Translate an SDK error into the canonical `BridgeError`.
@@ -673,7 +681,7 @@ impl BedrockBridge {
         let client = self.build_client_from_ctx(ctx)?;
 
         let (system, messages) =
-            split_system(req).map_err(|e| BridgeError::Config(format!("{e}")))?;
+            split_system(req).map_err(|e| BridgeError::InvalidUpstreamConfig(format!("{e}")))?;
         let anthropic_req = build_request(req, upstream_id, system, messages, false);
         let mut body_value = serde_json::to_value(&anthropic_req)
             .map_err(|e| BridgeError::Config(format!("serialize Anthropic request body: {e}")))?;
@@ -1364,6 +1372,24 @@ mod tests {
     }
 
     #[test]
+    fn publisher_strips_au_ca_jp_cross_region_prefixes() {
+        // #412: Australia/Canada/Japan cross-region inference profiles
+        // must resolve to their publisher, same as us./eu./apac.
+        assert_eq!(
+            BedrockPublisher::from_model_id("au.meta.llama3-1-70b-instruct-v1:0"),
+            Some(BedrockPublisher::Meta),
+        );
+        assert_eq!(
+            BedrockPublisher::from_model_id("ca.anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            Some(BedrockPublisher::Anthropic),
+        );
+        assert_eq!(
+            BedrockPublisher::from_model_id("jp.amazon.nova-pro-v1:0"),
+            Some(BedrockPublisher::AmazonNova),
+        );
+    }
+
+    #[test]
     fn publisher_resolves_catalog_others_to_other_variant() {
         assert_eq!(
             BedrockPublisher::from_model_id("deepseek.r1-v1:0"),
@@ -1430,7 +1456,7 @@ mod tests {
     fn bedrock_secret_rejects_empty() {
         let err = BedrockSecret::parse("").unwrap_err();
         match err {
-            BridgeError::Config(msg) => {
+            BridgeError::InvalidUpstreamConfig(msg) => {
                 assert!(
                     msg.contains("secret is empty"),
                     "must mention empty secret; got {msg}"
@@ -1440,7 +1466,7 @@ mod tests {
                     "must hint at required JSON shape; got {msg}"
                 );
             }
-            other => panic!("expected Config error, got {other:?}"),
+            other => panic!("expected InvalidUpstreamConfig error, got {other:?}"),
         }
     }
 
@@ -1448,13 +1474,13 @@ mod tests {
     fn bedrock_secret_rejects_non_json() {
         let err = BedrockSecret::parse("AKIA-test").unwrap_err();
         match err {
-            BridgeError::Config(msg) => {
+            BridgeError::InvalidUpstreamConfig(msg) => {
                 assert!(
                     msg.contains("must be valid JSON"),
                     "must mention JSON requirement; got {msg}"
                 );
             }
-            other => panic!("expected Config error, got {other:?}"),
+            other => panic!("expected InvalidUpstreamConfig error, got {other:?}"),
         }
     }
 
@@ -1466,7 +1492,7 @@ mod tests {
         let secret_with_distinctive_bytes = "X-DISTINCTIVE-LEAK-MARKER-Y";
         let err = BedrockSecret::parse(secret_with_distinctive_bytes).unwrap_err();
         match err {
-            BridgeError::Config(msg) => {
+            BridgeError::InvalidUpstreamConfig(msg) => {
                 assert!(
                     !msg.contains("X-DISTINCTIVE-LEAK-MARKER-Y"),
                     "error must NOT echo raw secret bytes; got {msg}"
@@ -1476,7 +1502,7 @@ mod tests {
                     "error must NOT leak partial secret bytes; got {msg}"
                 );
             }
-            other => panic!("expected Config error, got {other:?}"),
+            other => panic!("expected InvalidUpstreamConfig error, got {other:?}"),
         }
     }
 
@@ -1489,7 +1515,7 @@ mod tests {
         // required).
         let json = r#"{"access_key_id":"AKIA","secret_access_key":"sk"}"#;
         let err = BedrockSecret::parse(json).unwrap_err();
-        assert!(matches!(err, BridgeError::Config(_)));
+        assert!(matches!(err, BridgeError::InvalidUpstreamConfig(_)));
     }
 
     // ─── Pre-dispatch validation tests ─────────────────────────────────
@@ -1560,10 +1586,10 @@ mod tests {
         let req = ChatFormat::new("customer-facing", vec![ChatMessage::user("hi")]);
         let err = bridge.chat(&req, &ctx).await.unwrap_err();
         match err {
-            BridgeError::Config(msg) => {
+            BridgeError::InvalidUpstreamConfig(msg) => {
                 assert!(msg.contains("must be valid JSON"));
             }
-            other => panic!("expected Config error, got {other:?}"),
+            other => panic!("expected InvalidUpstreamConfig error, got {other:?}"),
         }
     }
 
@@ -1578,10 +1604,10 @@ mod tests {
         let req = ChatFormat::new("customer-facing", vec![ChatMessage::user("hi")]);
         let err = bridge.chat(&req, &ctx).await.unwrap_err();
         match err {
-            BridgeError::Config(msg) => {
+            BridgeError::InvalidUpstreamConfig(msg) => {
                 assert!(msg.contains("secret is empty"));
             }
-            other => panic!("expected Config error, got {other:?}"),
+            other => panic!("expected InvalidUpstreamConfig error, got {other:?}"),
         }
     }
 
@@ -1603,10 +1629,10 @@ mod tests {
         let req = ChatFormat::new("customer-facing", vec![ChatMessage::user("hi")]);
         let err = bridge.chat(&req, &ctx).await.unwrap_err();
         match err {
-            BridgeError::Config(msg) => {
+            BridgeError::InvalidUpstreamConfig(msg) => {
                 assert!(msg.contains("model_name missing"));
             }
-            other => panic!("expected Config error, got {other:?}"),
+            other => panic!("expected InvalidUpstreamConfig error, got {other:?}"),
         }
     }
 

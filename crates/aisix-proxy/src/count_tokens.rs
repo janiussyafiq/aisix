@@ -24,9 +24,9 @@
 //! - Anthropic Count Message Tokens API:
 //!   <https://platform.claude.com/docs/en/api/messages-count-tokens>
 //!   (`POST /v1/messages/count_tokens` → `{"input_tokens": <int>}`).
-//! - LiteLLM exposes the same route as a user-facing passthrough
-//!   (<https://docs.litellm.ai/docs/anthropic_count_tokens>) and had the
-//!   identical "route missing from the list" bug (BerriAI/litellm#15006).
+//! - Other OpenAI-compatible gateways expose the same route as a
+//!   user-facing passthrough and hit the identical "route missing from
+//!   the list" bug.
 
 use aisix_obs::{AccessLog, RequestOutcome};
 use axum::extract::rejection::JsonRejection;
@@ -318,19 +318,7 @@ async fn count_tokens_to_target(
         let status_u16 = status.as_u16();
         let retry_after = aisix_gateway::parse_retry_after(upstream_resp.headers());
         let message = upstream_resp.text().await.unwrap_or_default();
-        let truncated = if message.len() > 1024 {
-            // Truncate on a UTF-8 char boundary — slicing at the raw byte
-            // index 1024 panics when it splits a multibyte codepoint,
-            // which a non-ASCII upstream error body can trigger on this
-            // error path.
-            let end = (0..=1024)
-                .rev()
-                .find(|&i| message.is_char_boundary(i))
-                .unwrap_or(0);
-            format!("{}…", &message[..end])
-        } else {
-            message
-        };
+        let truncated = crate::util::truncate_on_char_boundary(&message, 1024);
         let err = aisix_gateway::BridgeError::upstream_status_with_retry_after(
             status_u16,
             truncated,
