@@ -1,269 +1,653 @@
 ---
 title: AISIX AI Gateway
-description: Route AI requests through one OpenAI-compatible API with centralized provider keys, model aliases, routing, and traffic policy.
+description: Route AI requests through a dedicated gateway layer with centralized provider keys, model aliases, routing, and traffic policy.
 sidebar_position: 1
+hide_title: true
 ---
 
 <style>{`
 .aisixLanding {
+  --aisix-text: #111827;
+  --aisix-muted: #4b5563;
+  --aisix-faint: #6b7280;
+  --aisix-surface: #ffffff;
+  --aisix-soft: #f8fafc;
+  --aisix-border: #e5e7eb;
+  --aisix-code-bg: #101827;
+  --aisix-code-text: #f8fafc;
+  --aisix-accent: #b91c1c;
+  --aisix-accent-dark: #7f1d1d;
+  --aisix-accent-soft: rgba(185, 28, 28, 0.09);
+  --aisix-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
   display: grid;
-  gap: 2rem;
+  gap: 3.1rem;
+  min-width: 0;
+}
+
+html[data-theme='dark'] .aisixLanding {
+  --aisix-text: #f8fafc;
+  --aisix-muted: #cbd5e1;
+  --aisix-faint: #94a3b8;
+  --aisix-surface: #181b20;
+  --aisix-soft: #111418;
+  --aisix-border: #2f343d;
+  --aisix-code-bg: #0b0f16;
+  --aisix-code-text: #f8fafc;
+  --aisix-shadow: 0 24px 60px rgba(0, 0, 0, 0.25);
 }
 
 .aisixHero {
+  position: relative;
+  overflow: hidden;
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(340px, 1.05fr);
+  grid-template-columns: minmax(0, 1fr) minmax(19rem, 0.78fr);
   gap: 2rem;
-  align-items: stretch;
-  padding: 0.5rem 0 0;
+  align-items: center;
+  padding: 0.8rem 0 0.2rem;
+}
+
+.aisixHeroCopy {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
 }
 
 .aisixEyebrow {
   margin: 0 0 0.75rem;
-  color: #b91c1c;
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  color: var(--aisix-accent);
+  font-size: 0.76rem;
+  font-weight: 780;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
 .aisixLead {
   margin: 0;
-  max-width: 42rem;
-  color: #111827;
-  font-size: 1.3rem;
-  line-height: 1.45;
-  font-weight: 650;
+  color: var(--aisix-text);
+  font-size: clamp(2.15rem, 3.4vw, 3.15rem);
+  font-weight: 820;
+  letter-spacing: -0.05em;
+  line-height: 1.03;
+}
+
+.aisixSublead {
+  margin: 0.65rem 0 0;
+  color: var(--aisix-text);
+  font-size: clamp(1.15rem, 1.55vw, 1.42rem);
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
 }
 
 .aisixIntro {
   margin: 1rem 0 0;
-  color: #374151;
-  font-size: 1rem;
-  line-height: 1.7;
+  max-width: 48rem;
+  color: var(--aisix-muted);
+  font-size: 1.02rem;
+  line-height: 1.68;
 }
 
 .aisixActions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem;
+  gap: 0.9rem;
+  align-items: center;
   margin-top: 1.25rem;
 }
 
 .aisixButton,
-.aisixButtonSecondary {
+.aisixTextLink {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-height: 2.5rem;
-  padding: 0.55rem 0.9rem;
-  border-radius: 6px;
-  font-weight: 650;
+  min-height: 2.45rem;
+  font-weight: 760;
   text-decoration: none !important;
 }
 
 .aisixButton {
+  justify-content: center;
+  padding: 0.55rem 0.95rem;
+  border-radius: 7px;
   color: #ffffff !important;
-  background: #b91c1c;
+  background: var(--aisix-accent);
 }
 
 .aisixButton:hover {
   background: #991b1b;
 }
 
-.aisixButtonSecondary {
-  color: #1f2937 !important;
-  border: 1px solid #d1d5db;
-  background: #ffffff;
+.aisixTextLink {
+  color: var(--aisix-accent);
 }
 
-.aisixButtonSecondary:hover {
-  border-color: #9ca3af;
-}
-
-.aisixTerminal {
+.aisixHeroTerminal {
+  position: relative;
+  z-index: 1;
   overflow: hidden;
-  border: 1px solid #d8dee8;
-  border-radius: 10px;
-  background: #f8fafc;
-  box-shadow: 0 18px 36px rgba(17, 24, 39, 0.08);
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  background: var(--aisix-code-bg);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.14);
 }
 
-.aisixTerminalBar {
+.aisixHeroTerminalBar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 0.7rem 0.95rem;
-  color: #475569;
-  font-size: 0.78rem;
-  font-weight: 650;
-  border-bottom: 1px solid #e2e8f0;
-  background: #ffffff;
+  gap: 0.8rem;
+  padding: 0.68rem 0.85rem;
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  background:
+    linear-gradient(90deg, rgba(185, 28, 28, 0.3), transparent 58%),
+    rgba(255, 255, 255, 0.045);
 }
 
-.aisixMethod {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-
-.aisixMethod::before {
+.aisixHeroTerminalMethod::before {
   content: "POST";
+  margin-right: 0.45rem;
   padding: 0.12rem 0.35rem;
   border-radius: 4px;
   color: #ffffff;
-  background: #b91c1c;
+  background: var(--aisix-accent);
   font-size: 0.66rem;
-  line-height: 1.2;
 }
 
-.aisixTerminal pre {
+.aisixHeroTerminal pre {
   margin: 0;
-  padding: 0.9rem 1rem 1rem;
-  color: #1f2937;
-  font-size: 0.86rem;
-  line-height: 1.65;
+  padding: 0.95rem 1rem 1.05rem;
+  color: var(--aisix-code-text);
+  font-size: 0.74rem;
+  line-height: 1.5;
   white-space: pre;
   overflow-x: auto;
   background:
-    linear-gradient(90deg, rgba(185, 28, 28, 0.05), rgba(49, 102, 221, 0.04)),
-    #ffffff;
+    radial-gradient(circle at 12% 0%, rgba(185, 28, 28, 0.2), transparent 18rem),
+    var(--aisix-code-bg);
 }
 
-.aisixTerminal code {
+.aisixHeroTerminal code {
   color: inherit;
   background: transparent;
   font-weight: 560;
 }
 
-.aisixSectionTitle {
-  margin: 0 0 0.75rem;
-  font-size: 1.55rem;
+.aisixTopology {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
-.aisixGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1.5rem;
+.aisixTopologyHeader {
+  position: relative;
+  z-index: 1;
+  max-width: 52rem;
+  margin: 0 0 0.65rem;
+  padding-left: 0;
+  border-left: 0;
+  text-align: left;
 }
 
-.aisixPathGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1.5rem;
-}
-
-.aisixTile {
-  padding: 0 0 0 1rem;
-  border-left: 3px solid #d8dee8;
-}
-
-.aisixTile h3 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-}
-
-.aisixTile p {
+.aisixTopologyHeader h2 {
   margin: 0;
-  color: #4b5563;
+  color: var(--aisix-text);
+  font-size: 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.aisixTopologyHeader p {
+  margin: 0.5rem 0 0;
+  max-width: 42rem;
+  color: var(--aisix-muted);
+  font-size: 0.96rem;
   line-height: 1.6;
 }
 
-.aisixTile a {
-  display: inline-flex;
-  margin-top: 0.8rem;
-  font-weight: 650;
+.aisixFlowDiagram {
+  position: relative;
+  z-index: 1;
+  overflow-x: auto;
+  margin-top: 1.1rem;
+  padding: 0.55rem 0 0.2rem;
+}
+
+.aisixFlowDiagram::before {
+  position: absolute;
+  inset: 18% 4% 4%;
+  z-index: -1;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(185, 28, 28, 0.12), rgba(15, 23, 42, 0.045), transparent);
+  filter: blur(28px);
+  content: "";
+}
+
+.aisixFlowScene {
+  display: grid;
+  grid-template-columns: minmax(8.5rem, 0.75fr) 2.4rem minmax(18rem, 1.55fr) 2.4rem minmax(8.5rem, 0.75fr);
+  gap: 0.65rem;
+  align-items: center;
+  min-width: 0;
+  padding: 1.05rem 0;
+}
+
+.aisixFlowNode,
+.aisixFlowGateway {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--aisix-border) 86%, transparent);
+  background: color-mix(in srgb, var(--aisix-surface) 94%, transparent);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.aisixFlowNode {
+  padding: 1rem;
+  border-radius: 22px;
+}
+
+.aisixFlowGateway {
+  padding: 1.15rem;
+  border-radius: 26px;
+  border-color: rgba(185, 28, 28, 0.25);
+  background:
+    radial-gradient(circle at 10% 0%, rgba(185, 28, 28, 0.1), transparent 14rem),
+    color-mix(in srgb, var(--aisix-surface) 96%, transparent);
+}
+
+.aisixFlowLabel {
+  display: block;
+  margin-bottom: 0.55rem;
+  color: var(--aisix-faint);
+  font-size: 0.68rem;
+  font-weight: 840;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.aisixFlowNode strong,
+.aisixFlowGateway strong {
+  display: block;
+  color: var(--aisix-text);
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.aisixFlowNode span,
+.aisixFlowGateway p,
+.aisixReturnPath {
+  color: var(--aisix-muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.aisixFlowNode span:not(.aisixFlowLabel) {
+  display: block;
+  margin-top: 0.45rem;
+}
+
+.aisixFlowGateway p {
+  margin: 0.45rem 0 0;
+}
+
+.aisixFlowSteps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 1rem;
+  counter-reset: aisixFlowStep;
+}
+
+.aisixFlowSteps span {
+  position: relative;
+  min-width: 0;
+  padding: 0.62rem 0.7rem 0.62rem 2rem;
+  border: 1px solid color-mix(in srgb, var(--aisix-border) 84%, transparent);
+  border-radius: 13px;
+  color: var(--aisix-text);
+  background: var(--aisix-surface);
+  font-size: 0.82rem;
+  font-weight: 720;
+  line-height: 1.3;
+}
+
+.aisixFlowSteps span::before {
+  position: absolute;
+  left: 0.58rem;
+  top: 0.62rem;
+  display: grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--aisix-accent);
+  content: counter(aisixFlowStep);
+  counter-increment: aisixFlowStep;
+  font-size: 0.62rem;
+  font-weight: 820;
+}
+
+.aisixFlowArrow {
+  display: grid;
+  place-items: center;
+  color: var(--aisix-accent);
+  font-size: 1.7rem;
+  font-weight: 780;
+}
+
+.aisixReturnPath {
+  grid-column: 1 / -1;
+  justify-self: center;
+  margin-top: 0.75rem;
+  padding: 0.45rem 0.85rem;
+  border: 1px dashed color-mix(in srgb, var(--aisix-accent) 42%, var(--aisix-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--aisix-surface) 80%, transparent);
+}
+
+.aisixSectionTitle {
+  margin: 0;
+  color: var(--aisix-text);
+  font-size: 1.5rem;
+  letter-spacing: -0.025em;
+  line-height: 1.22;
+}
+
+.aisixSectionIntro {
+  margin: 0.65rem 0 0;
+  max-width: 44rem;
+  color: var(--aisix-muted);
+  line-height: 1.64;
+}
+
+.aisixCapabilities {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: 2rem;
+  align-items: start;
+  padding: 0.35rem 0 0.2rem;
+}
+
+.aisixCapabilityList {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--aisix-border);
+}
+
+.aisixCapability {
+  min-width: 0;
+  padding: 0.78rem 0;
+  border-bottom: 1px solid var(--aisix-border);
+}
+
+.aisixCapability em {
+  display: block;
+  margin-bottom: 0.32rem;
+  color: var(--aisix-accent);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 840;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.aisixCapability strong {
+  display: block;
+  color: var(--aisix-text);
+  font-size: 1rem;
+}
+
+.aisixCapability span {
+  display: block;
+  margin-top: 0.32rem;
+  color: var(--aisix-muted);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.aisixDecision {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: 2rem;
+  align-items: start;
+  padding: 0.35rem 0 0.2rem;
+}
+
+.aisixDecision p {
+  margin: 1rem 0 0;
+  color: var(--aisix-muted);
+  line-height: 1.65;
+}
+
+.aisixComparison {
+  display: grid;
+  gap: 1rem;
+  padding-top: 0.25rem;
+}
+
+.aisixComparisonRow {
+  display: grid;
+  grid-template-columns: 6.2rem minmax(0, 1fr);
+  gap: 1.05rem;
+  align-items: baseline;
+  padding: 0 0 1rem;
+  border-bottom: 1px solid var(--aisix-border);
+}
+
+.aisixComparisonRow:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.aisixComparisonRow em {
+  color: var(--aisix-accent);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 840;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.aisixComparisonRow strong {
+  display: block;
+  margin-bottom: 0.22rem;
+  color: var(--aisix-text);
+}
+
+.aisixComparisonRow span {
+  color: var(--aisix-muted);
+  line-height: 1.55;
+}
+
+.aisixNext {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 0.74fr) minmax(0, 1.26fr);
+  gap: 2rem;
+  align-items: start;
+  padding: 1.2rem 0 0.2rem;
+}
+
+.aisixNextLead {
+  max-width: 32rem;
+}
+
+.aisixNextRail {
+  display: grid;
+  gap: 0;
+  counter-reset: aisixNextStep;
+}
+
+.aisixNextRail a {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(6.8rem, 0.28fr) minmax(0, 1fr);
+  gap: 1rem;
+  min-width: 0;
+  padding: 0.05rem 0 1.05rem 1.55rem;
+  color: var(--aisix-text);
   text-decoration: none;
 }
 
-.aisixDeploy {
+.aisixNextRail a:not(:last-child)::after {
+  position: absolute;
+  left: 0.45rem;
+  top: 1.45rem;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(180deg, rgba(185, 28, 28, 0.36), var(--aisix-border));
+  content: "";
+}
+
+.aisixNextRail a::before {
+  position: absolute;
+  left: 0;
+  top: 0.25rem;
+  z-index: 1;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1.5rem;
+  place-items: center;
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid var(--aisix-accent);
+  border-radius: 999px;
+  background: var(--aisix-surface);
+  content: "";
 }
 
-.aisixDeployBox {
-  padding: 0.9rem 0 0;
-  border-top: 1px solid #e5e7eb;
+.aisixNextRail em {
+  color: var(--aisix-accent);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 840;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.aisixDeployBox h3 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-}
-
-.aisixDeployBox p {
-  margin: 0;
-  color: #4b5563;
-  line-height: 1.6;
-}
-
-.aisixFlow {
-  padding: 1rem 0 0;
-  border-top: 1px solid #e5e7eb;
-}
-
-.aisixFlow ol {
-  margin-bottom: 0;
-}
-
-.aisixLinks {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1rem;
-}
-
-.aisixLinkBox {
-  padding: 0.9rem 0 0;
-  border-top: 1px solid #e5e7eb;
-}
-
-.aisixLinkBox strong {
+.aisixNextRail strong {
   display: block;
-  margin-bottom: 0.35rem;
+  color: var(--aisix-text);
+  font-size: 1rem;
+  line-height: 1.35;
 }
 
-.aisixLinkBox p {
-  margin: 0.35rem 0 0;
-  color: #4b5563;
-  font-size: 0.95rem;
-  line-height: 1.55;
+.aisixNextRail span {
+  display: block;
+  margin-top: 0.32rem;
+  color: var(--aisix-muted);
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.aisixNextRail a:hover strong {
+  color: var(--aisix-accent);
+}
+
+.aisixNextRail a:hover {
+  background:
+    linear-gradient(90deg, rgba(185, 28, 28, 0.045), transparent 68%);
 }
 
 @media (max-width: 996px) {
   .aisixHero,
-  .aisixGrid,
-  .aisixPathGrid,
-  .aisixDeploy,
-  .aisixLinks {
+  .aisixTopology,
+  .aisixCapabilities,
+  .aisixDecision,
+  .aisixNext {
     grid-template-columns: 1fr;
+  }
+
+  .aisixFlowScene {
+    grid-template-columns: 1fr;
+    gap: 0.8rem;
+  }
+
+  .aisixFlowArrow {
+    transform: rotate(90deg);
+  }
+}
+
+@media (max-width: 576px) {
+  .aisixLanding {
+    width: calc(100vw - 2rem);
+    max-width: calc(100vw - 2rem);
+    gap: 2.45rem;
+  }
+
+  .aisixHero {
+    padding: 0.35rem 0 0;
+  }
+
+  .aisixLead {
+    font-size: clamp(1.65rem, 8vw, 2.12rem);
+  }
+
+  .aisixTopology {
+    padding: 0;
+    border-radius: 0;
+  }
+
+  .aisixCapabilityList {
+    grid-template-columns: 1fr;
+  }
+
+  .aisixTopologyHeader {
+    margin: 0 0 1rem;
+    padding-left: 0;
+    text-align: left;
+  }
+
+  .aisixFlowSteps {
+    grid-template-columns: 1fr;
+  }
+
+  .aisixHeroTerminalBar span:last-child {
+    display: none;
+  }
+
+  .aisixComparisonRow {
+    grid-template-columns: 1fr;
+    gap: 0.3rem;
+  }
+
+  .aisixNextRail a {
+    grid-template-columns: 1fr;
+    gap: 0.28rem;
   }
 }
 `}</style>
 
 <div className="aisixLanding">
   <section className="aisixHero">
-    <div>
+    <div className="aisixHeroCopy">
       <p className="aisixEyebrow">AI traffic gateway</p>
-      <p className="aisixLead">
-        Route AI requests through one OpenAI-compatible API instead of wiring every application to every provider.
+      <h1 className="aisixLead">
+        AISIX AI Gateway
+      </h1>
+      <p className="aisixSublead">
+        Put one stable API contract in front of your AI providers.
       </p>
       <p className="aisixIntro">
-        AISIX AI Gateway sits between your application and upstream AI providers. Use it to manage provider keys, model aliases, routing, rate limits, caching, guardrails, and observability from one gateway layer.
+        AISIX AI Gateway is a dedicated gateway for AI traffic. It lets applications call stable model aliases while the platform team controls provider credentials, routing, failover, rate limits, caching, guardrails, and observability.
       </p>
       <div className="aisixActions">
-        <a className="aisixButton" href="quickstart/">Send your first request</a>
-        <a className="aisixButtonSecondary" href="cloud/overview">Explore AISIX Cloud</a>
+        <a className="aisixButton" href="/ai-gateway/quickstart/">Start the quickstart</a>
+        <a className="aisixTextLink" href="/ai-gateway/overview/what-is-aisix-ai-gateway">Read the overview</a>
       </div>
     </div>
 
-    <div className="aisixTerminal" aria-label="OpenAI-compatible request example">
-      <div className="aisixTerminalBar">
-        <span className="aisixMethod">OpenAI-compatible request</span>
+    <div className="aisixHeroTerminal" aria-label="OpenAI-compatible request example">
+      <div className="aisixHeroTerminalBar">
+        <span className="aisixHeroTerminalMethod">OpenAI-compatible request</span>
         <span>localhost:3000</span>
       </div>
-      <pre><code>{`curl -sS http://127.0.0.1:3000/v1/chat/completions \\
+      <pre><code>{`curl -sS \\
+  http://127.0.0.1:3000/v1/chat/completions \\
   -H "Authorization: Bearer sk-demo-caller" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -275,83 +659,147 @@ sidebar_position: 1
     </div>
   </section>
 
-  <section>
-    <h2 className="aisixSectionTitle">Choose Your Path</h2>
-    <div className="aisixPathGrid">
-      <div className="aisixTile">
-        <h3>Build on the gateway</h3>
-        <p>Use the OpenAI-compatible API, Anthropic Messages, SDK guides, and streaming docs to point application traffic at AISIX.</p>
-        <a href="integration/openai-compatible-api">View client integration</a>
-      </div>
-      <div className="aisixTile">
-        <h3>Operate the gateway</h3>
-        <p>Boot the gateway, configure provider keys and model aliases, then add routing, rate limits, caching, and guardrails.</p>
-        <a href="quickstart/">Start with quickstart</a>
-      </div>
-      <div className="aisixTile">
-        <h3>Understand the system</h3>
-        <p>Learn the gateway model, deployment modes, configuration propagation, and how AISIX Cloud changes the control plane.</p>
-        <a href="overview/what-is-aisix-ai-gateway">Read the overview</a>
+  <section className="aisixTopology" aria-label="AISIX AI Gateway request path">
+    <div className="aisixTopologyHeader">
+      <h2>How requests flow</h2>
+      <p>
+        Applications call AISIX first. AISIX authenticates the caller, resolves the model alias, applies policy, and forwards the request to the selected provider.
+      </p>
+    </div>
+    <div className="aisixFlowDiagram">
+      <div className="aisixFlowScene" role="img" aria-label="Applications send requests to AISIX. AISIX authenticates the caller, resolves the model alias, applies policy, forwards the request to the selected provider, and returns the response through the same gateway contract.">
+        <div className="aisixFlowNode">
+          <span className="aisixFlowLabel">Applications</span>
+          <strong>Apps, agents, and services</strong>
+          <span>Send OpenAI-compatible requests with gateway-issued caller keys.</span>
+        </div>
+        <div className="aisixFlowArrow" aria-hidden="true">→</div>
+        <div className="aisixFlowGateway">
+          <span className="aisixFlowLabel">AISIX gateway boundary</span>
+          <strong>Stable contract, controlled provider access</strong>
+          <p>AISIX keeps client traffic on one API shape while resolving the provider-side target for each request.</p>
+          <div className="aisixFlowSteps">
+            <span>Authenticate caller</span>
+            <span>Resolve model alias</span>
+            <span>Apply limits, cache, and guardrails</span>
+            <span>Select provider route</span>
+          </div>
+        </div>
+        <div className="aisixFlowArrow" aria-hidden="true">→</div>
+        <div className="aisixFlowNode">
+          <span className="aisixFlowLabel">Providers</span>
+          <strong>OpenAI, Anthropic, Bedrock, Vertex</strong>
+          <span>Receive provider-authenticated requests from the gateway.</span>
+        </div>
+        <div className="aisixReturnPath">Provider responses return through AISIX using the same client-facing contract.</div>
       </div>
     </div>
   </section>
 
-  <section>
-    <h2 className="aisixSectionTitle">What The Gateway Handles</h2>
-    <div className="aisixGrid">
-      <div className="aisixTile">
-        <h3>Provider access</h3>
-        <p>Keep upstream provider credentials out of application code and resolve them through provider keys.</p>
+  <section className="aisixCapabilities">
+    <div>
+      <h2 className="aisixSectionTitle">What changes when AI traffic goes through AISIX</h2>
+      <p className="aisixSectionIntro">
+        Application teams keep calling a familiar API. Platform teams move provider credentials, model aliases, routing, and policy into one operator-managed gateway.
+      </p>
+    </div>
+    <div className="aisixCapabilityList">
+      <div className="aisixCapability">
+        <em>Access</em>
+        <strong>Caller keys and model allowlists</strong>
+        <span>Authenticate applications and decide which model aliases each key can use.</span>
       </div>
-      <div className="aisixTile">
-        <h3>Model routing</h3>
-        <p>Expose stable model aliases to callers while changing upstream models or providers behind the gateway.</p>
+      <div className="aisixCapability">
+        <em>Providers</em>
+        <strong>Centralized upstream credentials</strong>
+        <span>Keep provider keys, base URLs, and adapter details out of application code.</span>
       </div>
-      <div className="aisixTile">
-        <h3>Traffic policy</h3>
-        <p>Apply rate limits, caching, guardrails, and observability controls at the gateway instead of every client.</p>
+      <div className="aisixCapability">
+        <em>Routing</em>
+        <strong>Stable aliases with failover</strong>
+        <span>Expose one model name while AISIX selects direct targets behind it.</span>
+      </div>
+      <div className="aisixCapability">
+        <em>Policy</em>
+        <strong>Limits, cache, guardrails, telemetry</strong>
+        <span>Apply AI-specific controls before requests leave your gateway boundary.</span>
       </div>
     </div>
   </section>
 
-  <section>
-    <h2 className="aisixSectionTitle">Deployment Options</h2>
-    <div className="aisixDeploy">
-      <div className="aisixDeployBox">
-        <h3>Self-hosted gateway</h3>
-        <p>Run AISIX yourself, expose the proxy and admin listeners, and manage dynamic resources through the admin API and etcd.</p>
+  <section className="aisixDecision">
+    <div>
+      <h2 className="aisixSectionTitle">Why AISIX if you already use APISIX or API7 Gateway?</h2>
+      <p>
+        APISIX and API7 Gateway can add AI behavior to normal gateway routes through AI plugins. AISIX is for teams that want AI provider access to be managed as its own gateway domain, with model aliases and provider policy as first-class resources.
+      </p>
+      <p>
+        Use AISIX when several applications need the same AI access controls, provider credentials, routing rules, and AI-specific policy without copying that logic into every route or service.
+      </p>
+    </div>
+
+    <div className="aisixComparison" aria-label="APISIX and AISIX comparison">
+      <div className="aisixComparisonRow">
+        <em>APISIX</em>
+        <div>
+          <strong>Add AI features to existing API routes.</strong>
+          <span>Use AI plugins when your existing API gateway route is the natural place to call or transform AI services.</span>
+        </div>
       </div>
-      <div className="aisixDeployBox">
-        <h3>AISIX Cloud managed data plane</h3>
-        <p>Use AISIX Cloud as the managed control plane for environments, certificates, and data-plane configuration projection.</p>
+      <div className="aisixComparisonRow">
+        <em>AISIX</em>
+        <div>
+          <strong>Run AI traffic through a dedicated gateway domain.</strong>
+          <span>Use AISIX when applications should call stable model names while the platform owns provider keys, routing, and policy.</span>
+        </div>
       </div>
     </div>
   </section>
 
-  <section className="aisixFlow">
-    <h2 className="aisixSectionTitle">How Requests Flow</h2>
-    <ol>
-      <li>Your application sends an OpenAI-compatible request to AISIX.</li>
-      <li>AISIX authenticates the caller and resolves the requested model alias.</li>
-      <li>AISIX forwards the request to the configured upstream provider and returns the provider response.</li>
-    </ol>
-  </section>
-
-  <section>
-    <h2 className="aisixSectionTitle">Where To Go Next</h2>
-    <div className="aisixLinks">
-      <div className="aisixLinkBox">
-        <strong><a href="quickstart/">Quickstart</a></strong>
-        <p>Boot the gateway locally, configure the first model and key, and send a proxied request.</p>
-      </div>
-      <div className="aisixLinkBox">
-        <strong><a href="integration/openai-compatible-api">OpenAI-Compatible API</a></strong>
-        <p>Review the client-facing routes and request shapes supported by the proxy.</p>
-      </div>
-      <div className="aisixLinkBox">
-        <strong><a href="configuration/models">Configure Models</a></strong>
-        <p>Learn how model aliases connect callers to upstream models and provider credentials.</p>
-      </div>
+  <section className="aisixNext">
+    <div className="aisixNextLead">
+      <p className="aisixEyebrow">Read next</p>
+      <h2 className="aisixSectionTitle">Build from first request to production</h2>
+      <p className="aisixSectionIntro">
+        Start with one local request, then move through the concepts, client surfaces, provider setup, and operations checks that make the gateway ready for real teams.
+      </p>
+    </div>
+    <div className="aisixNextRail" aria-label="Recommended AI Gateway documentation sequence">
+      <a href="/ai-gateway/quickstart/">
+        <em>First</em>
+        <div>
+          <strong>Boot AISIX and send a proxied request</strong>
+          <span>Configure one provider key, one model alias, and one caller key in the quickstart.</span>
+        </div>
+      </a>
+      <a href="/ai-gateway/overview/what-is-aisix-ai-gateway">
+        <em>Then</em>
+        <div>
+          <strong>Understand the gateway model</strong>
+          <span>Learn where AISIX fits, which resources operators manage, and when it is different from an API gateway plugin path.</span>
+        </div>
+      </a>
+      <a href="/ai-gateway/integration/overview">
+        <em>Next</em>
+        <div>
+          <strong>Connect the clients your teams already use</strong>
+          <span>Choose OpenAI-compatible, Anthropic-style, specialized endpoint, or passthrough surfaces.</span>
+        </div>
+      </a>
+      <a href="/ai-gateway/configuration/overview">
+        <em>Configure</em>
+        <div>
+          <strong>Shape provider access and policy</strong>
+          <span>Manage provider keys, models, caller keys, routing, limits, budgets, guardrails, cache, and telemetry.</span>
+        </div>
+      </a>
+      <a href="/ai-gateway/operations/overview">
+        <em>Operate</em>
+        <div>
+          <strong>Prepare the runtime for production</strong>
+          <span>Check deployment, security, health, metrics, verification, troubleshooting, and upgrades.</span>
+        </div>
+      </a>
     </div>
   </section>
 </div>
