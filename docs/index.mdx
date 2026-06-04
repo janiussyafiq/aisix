@@ -230,8 +230,8 @@ html[data-theme='dark'] .aisixLanding {
 
 .aisixFlowScene {
   display: grid;
-  grid-template-columns: minmax(8.5rem, 0.75fr) 2.4rem minmax(18rem, 1.55fr) 2.4rem minmax(8.5rem, 0.75fr);
-  gap: 0.65rem;
+  grid-template-columns: minmax(8.5rem, 0.75fr) 3rem minmax(18rem, 1.55fr) 3rem minmax(8.5rem, 0.75fr);
+  gap: 0.5rem;
   align-items: center;
   min-width: 0;
   padding: 1.05rem 0;
@@ -333,11 +333,35 @@ html[data-theme='dark'] .aisixLanding {
 }
 
 .aisixFlowArrow {
+  position: relative;
   display: grid;
   place-items: center;
-  color: var(--aisix-accent);
-  font-size: 1.7rem;
-  font-weight: 780;
+  min-width: 3rem;
+  height: 1.5rem;
+  color: transparent;
+  font-size: 0;
+}
+
+.aisixFlowArrow::before {
+  position: absolute;
+  left: 0.35rem;
+  right: 0.6rem;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(185, 28, 28, 0.16), rgba(185, 28, 28, 0.68));
+  content: "";
+}
+
+.aisixFlowArrow::after {
+  position: absolute;
+  right: 0.48rem;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-top: 1.5px solid rgba(185, 28, 28, 0.82);
+  border-right: 1.5px solid rgba(185, 28, 28, 0.82);
+  border-radius: 0.04rem;
+  content: "";
+  transform: rotate(45deg);
 }
 
 .aisixReturnPath {
@@ -489,7 +513,7 @@ html[data-theme='dark'] .aisixLanding {
   grid-template-columns: minmax(6.8rem, 0.28fr) minmax(0, 1fr);
   gap: 1rem;
   min-width: 0;
-  padding: 0.05rem 0 1.05rem 1.55rem;
+  padding: 0.55rem 0.8rem 1.05rem 1.55rem;
   color: var(--aisix-text);
   text-decoration: none;
 }
@@ -549,6 +573,7 @@ html[data-theme='dark'] .aisixLanding {
 }
 
 .aisixNextRail a:hover {
+  border-radius: 14px;
   background:
     linear-gradient(90deg, rgba(185, 28, 28, 0.045), transparent 68%);
 }
@@ -568,6 +593,7 @@ html[data-theme='dark'] .aisixLanding {
   }
 
   .aisixFlowArrow {
+    justify-self: center;
     transform: rotate(90deg);
   }
 }
@@ -759,31 +785,38 @@ html[data-theme='dark'] .aisixLanding {
   <section className="aisixNext">
     <div className="aisixNextLead">
       <p className="aisixEyebrow">Read next</p>
-      <h2 className="aisixSectionTitle">Build from first request to production</h2>
+      <h2 className="aisixSectionTitle">From First Request to Production</h2>
       <p className="aisixSectionIntro">
         Start with one local request, then move through the concepts, client surfaces, provider setup, and operations checks that make the gateway ready for real teams.
       </p>
     </div>
     <div className="aisixNextRail" aria-label="Recommended AI Gateway documentation sequence">
       <a href="/ai-gateway/quickstart/">
-        <em>First</em>
+        <em>Quickstart</em>
         <div>
           <strong>Boot AISIX and send a proxied request</strong>
           <span>Configure one provider key, one model alias, and one caller key in the quickstart.</span>
         </div>
       </a>
       <a href="/ai-gateway/overview/what-is-aisix-ai-gateway">
-        <em>Then</em>
+        <em>Concepts</em>
         <div>
           <strong>Understand the gateway model</strong>
           <span>Learn where AISIX fits, which resources operators manage, and when it is different from an API gateway plugin path.</span>
         </div>
       </a>
       <a href="/ai-gateway/integration/overview">
-        <em>Next</em>
+        <em>Client APIs</em>
         <div>
           <strong>Connect the clients your teams already use</strong>
           <span>Choose OpenAI-compatible, Anthropic-style, specialized endpoint, or passthrough surfaces.</span>
+        </div>
+      </a>
+      <a href="/ai-gateway/integration/provider-upstreams">
+        <em>Providers</em>
+        <div>
+          <strong>Connect upstream providers</strong>
+          <span>Map AISIX provider keys and model aliases to OpenAI-compatible, Bedrock, Vertex, Azure OpenAI, or private upstreams.</span>
         </div>
       </a>
       <a href="/ai-gateway/configuration/overview">

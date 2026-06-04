@@ -1,5 +1,5 @@
 ---
-title: What Is AISIX AI Gateway?
+title: AISIX AI Gateway Overview
 description: Learn what AISIX AI Gateway is, what problems it solves, and how it fits between applications and upstream model providers.
 sidebar_position: 1
 toc_max_heading_level: 2
