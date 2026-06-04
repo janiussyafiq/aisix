@@ -1,28 +1,28 @@
 ---
 title: Use an OpenAI Client with an Anthropic Upstream
-description: Route an OpenAI-style client through AISIX AI Gateway to an Anthropic upstream model, with the gateway translating the wire shape in both directions.
+description: Route an OpenAI-style client through AISIX AI Gateway to an Anthropic upstream model, with the gateway translating requests and responses in both directions.
 sidebar_position: 80
+toc_max_heading_level: 2
 ---
 
-This tutorial wires an OpenAI-compatible client to an Anthropic upstream model. The caller speaks OpenAI Chat Completions; the gateway speaks Anthropic Messages to the upstream; the gateway returns an OpenAI-shaped response back to the caller.
-
-In this tutorial, you will:
-
-1. Create an Anthropic provider key.
-2. Create a model named `claude-prod`.
-3. Call `claude-prod` with the OpenAI SDK.
-4. Verify that AISIX returns an OpenAI-shaped response.
+Route an OpenAI-compatible client to an Anthropic upstream model. The caller
+sends OpenAI Chat Completions requests, AISIX sends Anthropic Messages requests
+upstream, and the caller receives an OpenAI-compatible response. The path uses
+an Anthropic provider key, a model alias named `claude-prod`, and an OpenAI SDK
+request through AISIX.
 
 ## Prerequisites
 
-- A running gateway from the [Quickstart](../quickstart)
-- `jq`, used to capture resource IDs from admin API responses
-- An Anthropic API key
-- A caller API key from [Understand admin resources](../quickstart/first-model-first-key-first-request.md), with `claude-prod` in `allowed_models` (or `["*"]`)
+Before you start, run the gateway from the [Quickstart](../quickstart), install
+`jq`, and prepare an Anthropic API key. You also need a caller API key from
+[Understand Admin Resources](../quickstart/first-model-first-key-first-request.md)
+that can use `claude-prod`, or a wildcard `allowed_models` value of `["*"]`.
 
-## Set variables
+## Configure the Anthropic Upstream
 
-Export the values used by the tutorial:
+### Set Variables
+
+Export the values used in the commands:
 
 ```shell
 export AISIX_ADMIN_KEY="admin-local-only-change-me"
@@ -30,10 +30,13 @@ export ANTHROPIC_API_KEY="YOUR_ANTHROPIC_API_KEY"
 export AISIX_API_KEY="sk-demo-caller"
 ```
 
-## Create an Anthropic provider key
+### Create an Anthropic Provider Key
 
-:::note Anthropic api_base
-The Anthropic bridge appends `/v1/messages` to the resolved base URL. The canonical value is the bare host, `https://api.anthropic.com`. If you paste `https://api.anthropic.com/v1` or `https://api.anthropic.com/v1/messages`, the bridge normalizes it back to the bare host.
+:::note Anthropic `api_base`
+AISIX appends `/v1/messages` to the resolved base URL. Use the bare host,
+`https://api.anthropic.com`. If you paste
+`https://api.anthropic.com/v1` or `https://api.anthropic.com/v1/messages`,
+AISIX normalizes it back to the bare host.
 :::
 
 ```shell
@@ -49,7 +52,7 @@ ANTHROPIC_PK_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/provider_keys 
   }' | jq -r .id)
 ```
 
-## Create a model
+### Create a Model
 
 ```shell
 CLAUDE_PROD_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
@@ -63,8 +66,10 @@ CLAUDE_PROD_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
   }' | jq -r .id)
 ```
 
-- `provider: "anthropic"` selects the Anthropic bridge at dispatch time.
-- `model_name` is the upstream model identifier — what the gateway sends to Anthropic. Verify the exact value in the [Anthropic Messages API reference](https://docs.anthropic.com/en/api/messages).
+In this model, `provider: "anthropic"` identifies the upstream provider, and
+`model_name` is the upstream model identifier that the gateway sends to
+Anthropic. Verify the exact model value in the
+[Anthropic Messages API reference](https://docs.anthropic.com/en/api/messages).
 
 Wait for the model alias to become visible to the caller key:
 
@@ -87,11 +92,18 @@ if [ "${MODEL_VISIBLE}" != "true" ]; then
 fi
 ```
 
-If the loop does not report `claude-prod is visible`, the admin write may not have reached the proxy snapshot yet. See [Verify propagation to the proxy](../quickstart/first-model-first-key-first-request.md#verify-propagation-to-the-proxy) for the full propagation check.
+If the loop does not report `claude-prod is visible`, the admin write may not
+have reached the loaded proxy configuration yet. See
+[Verify propagation to the proxy](../quickstart/first-model-first-key-first-request.md#verify-propagation-to-the-proxy)
+for the full propagation check.
 
-## Call with the OpenAI SDK
+## Call Through AISIX
 
-The caller does not change provider, base URL, or request shape relative to a normal OpenAI gateway call. Only `model` changes — it is now the gateway alias `claude-prod`.
+### Use the OpenAI SDK
+
+The caller does not change provider, base URL, or request format relative to a
+normal OpenAI gateway call. Only `model` changes: it is now the gateway alias
+`claude-prod`.
 
 ```js title="anthropic-via-openai-sdk.mjs"
 import OpenAI from "openai";
@@ -116,18 +128,17 @@ Run with:
 node anthropic-via-openai-sdk.mjs
 ```
 
-## Verify
+## Verify Translation
 
-The response object is OpenAI-shaped. Check the published wire properties so you have proof the translation worked, not just that the call returned `200`:
+The response object is OpenAI-compatible. Check the response fields instead of
+relying only on the `200` status code. `completion.object` should be
+`chat.completion`, `completion.choices[0].message.role` should be `assistant`,
+and `completion.choices[0].message.content` should contain text from the
+Anthropic response. Usage fields are also normalized: `prompt_tokens` maps from
+Anthropic `input_tokens`, `completion_tokens` maps from Anthropic
+`output_tokens`, and `total_tokens` is their sum.
 
-- `completion.object === "chat.completion"`
-- `completion.choices[0].message.role === "assistant"`
-- `completion.choices[0].message.content` is the text content from Anthropic's `content[0].text`
-- `completion.usage.prompt_tokens` is Anthropic's `input_tokens`
-- `completion.usage.completion_tokens` is Anthropic's `output_tokens`
-- `completion.usage.total_tokens` is the sum
-
-If you prefer raw HTTP and want to inspect the response body directly:
+To inspect the HTTP response body directly:
 
 ```shell
 curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
@@ -139,9 +150,10 @@ curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
   }'
 ```
 
-You should see a single OpenAI-shaped chat-completions object — no Anthropic-shaped fields leak through.
+The caller receives a single OpenAI-compatible chat-completions object.
+Anthropic-specific fields should not appear in the caller response.
 
-## Delete resources
+## Clean Up
 
 ```shell
 curl -sS -X DELETE "http://127.0.0.1:3001/admin/v1/models/${CLAUDE_PROD_ID}" \
@@ -150,9 +162,11 @@ curl -sS -X DELETE "http://127.0.0.1:3001/admin/v1/provider_keys/${ANTHROPIC_PK_
   -H "Authorization: Bearer ${AISIX_ADMIN_KEY}"
 ```
 
-## Next steps
+## Related Reading
 
-- [Models](../configuration/models.md) — direct model field reference, including the difference between `display_name` and `model_name`
-- [Provider keys](../configuration/provider-keys.md) — `api_base` conventions per provider
-- [Anthropic messages](../integration/anthropic-messages.md) — the Anthropic-shaped endpoint surface and current translation boundaries
-- [OpenAI-compatible API](../integration/openai-compatible-api.md) — what gets normalized and what is forwarded as-is
+For direct model fields, including the difference between `display_name` and
+`model_name`, see [Models](../configuration/models.md). For provider-specific
+`api_base` behavior, see [Provider Keys](../configuration/provider-keys.md).
+For the Anthropic-style proxy API and OpenAI-compatible client behavior, see
+[Anthropic-style Messages API](../integration/anthropic-messages.md) and
+[OpenAI-compatible API](../integration/openai-compatible-api.md).

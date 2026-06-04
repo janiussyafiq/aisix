@@ -1,6 +1,6 @@
 ---
-title: Snapshot and Watch
-description: How AISIX AI Gateway propagates configuration from etcd to proxy instances without putting etcd or global locks on the request path.
+title: Configuration Watch Architecture
+description: Understand how AISIX AI Gateway propagates configuration from etcd to proxy instances without requiring request-time etcd reads.
 sidebar_position: 1
 ---
 
@@ -9,144 +9,131 @@ provider keys, guardrails, cache policies, and rate-limit policies in
 etcd. Proxy instances need those resources for every AI request, but
 they do not call etcd on the request path.
 
-Each proxy keeps a local immutable snapshot of the latest accepted
-configuration. A background supervisor watches etcd, validates updates,
-and atomically publishes a new snapshot when resources change. Request
-handlers load the current snapshot once, then use that same consistent
-view for the lifetime of the request.
+Each proxy keeps a local view of the latest accepted configuration. A
+configuration watch reads etcd, validates updates, and publishes a new
+configuration view when resources change. A request loads the latest accepted
+view once, then uses that same view for the lifetime of the request.
 
-## What to expect
+## Propagation Behavior
 
-- **Configuration propagation is asynchronous.** An admin write is
-  accepted after the control plane persists it. Each proxy applies the
-  change after receiving and validating the next watch event.
-- **Requests do not wait on etcd.** The request path reads from a local
-  snapshot, not from the backing configuration store.
-- **Invalid resources do not replace valid config.** A rejected resource
-  is reported through heartbeat state, while the proxy keeps serving the
-  last valid snapshot.
-- **Each proxy watches independently.** In multi-replica deployments,
-  different proxy instances can briefly serve different accepted
-  revisions.
+Configuration propagation is asynchronous. An admin write is accepted after the
+control plane persists it, and each proxy applies the change after receiving
+and validating the next watch event.
 
-## How propagation works
+Requests do not wait on etcd. The request path reads from loaded
+configuration, not from the backing configuration store. If a resource is
+rejected, AISIX reports the rejection through heartbeat state while the proxy
+keeps serving the last valid configuration.
+
+In multi-replica deployments, each proxy watches independently, so different
+proxy instances can briefly serve different accepted revisions.
+
+## Propagation Flow
 
 ```mermaid
 flowchart LR
-  etcd[(etcd)] -->|"watch events"| sup[Supervisor]
-  sup -->|"validate and build"| snapshot[New snapshot]
-  snapshot -->|"atomic publish"| handle[Snapshot handle]
-  handle -->|"load once"| req1[Request]
-  handle -->|"load once"| req2[Request]
-  sup -->|"persist accepted state"| cache[(Snapshot cache)]
+  etcd[(etcd)] -->|"watch events"| sup["Configuration watcher"]
+  sup -->|"validate and build"| snapshot["Updated configuration"]
+  snapshot -->|"publish"| live["Loaded configuration"]
+  live -->|"load once"| req1[Request]
+  live -->|"load once"| req2[Request]
+  sup -->|"persist accepted state"| cache[(Configuration cache)]
   cache -.->|"boot recovery"| sup
 ```
 
-The propagation path has three parts:
+The propagation path has three parts. The configuration watch loads resources
+from etcd, validates changes, and publishes accepted configuration. Loaded
+configuration gives request handling and admin reads access to the accepted
+view. The configuration cache stores accepted entries on disk so a managed data
+plane can recover from a previous accepted state while reconnecting.
 
-- **Supervisor** watches etcd, loads resources, validates changes, and
-  publishes accepted snapshots.
-- **Snapshot handle** exposes the current immutable snapshot to request
-  handlers and admin reads.
-- **Snapshot cache** stores accepted entries on disk so a managed data
-  plane can recover from a previous accepted state while reconnecting.
+On each request, AISIX loads the current configuration, looks up the requested
+model, follows references such as provider keys and policies, then forwards the
+request using that one view. If newer configuration is published while the
+request is in flight, that request keeps using the view it already loaded.
 
-The request path is intentionally small: a handler loads the snapshot,
-looks up the requested model, follows references such as provider keys
-and policies, then forwards the request using that one view. If a newer
-snapshot is published while the request is in flight, that request keeps
-using the view it already loaded.
+## Request Configuration Reads
 
-## How requests read configuration
-
-The proxy loads the snapshot at the beginning of request handling. From
-that point on, the request uses a single immutable snapshot.
+The proxy loads configuration at the beginning of request handling. From that
+point on, the request uses a single consistent view.
 
 This matters for referenced resources. For example, a model can point to
 a provider key, rate-limit policy, cache policy, and guardrail policy.
 The request should not see the model from one revision and the provider
-key from another revision. Holding one snapshot for the full request
+key from another revision. Holding one configuration view for the full request
 keeps those lookups consistent.
 
-The implementation uses an atomic snapshot handle backed by `ArcSwap`,
-so reads do not block while the supervisor publishes a newer snapshot.
-The trade-off is that an old snapshot can stay in memory until the last
-request using it finishes.
+Publishing a new configuration view lets request reads continue while newer
+configuration is being prepared. The trade-off is that an old view can stay in
+memory until the last request using it finishes.
 
-## How the supervisor publishes updates
+## Configuration Updates
 
-The supervisor owns configuration updates. On startup, it can replay the
-snapshot cache, then connects to etcd, loads the full resource set, and
-starts watching for updates.
+The configuration watch applies resource updates. On startup, it can replay the
+configuration cache, then connect to etcd, load the full resource set, and
+start watching for updates.
 
 ```mermaid
 sequenceDiagram
-  participant cache as Snapshot cache
-  participant sup as Supervisor
+  participant cache as Configuration cache
+  participant sup as Configuration watcher
   participant etcd as etcd
-  participant h as Snapshot handle
+  participant h as Loaded configuration
 
   sup->>cache: Load cached entries
   cache-->>sup: Previous accepted state
-  sup->>h: Publish cached snapshot
+  sup->>h: Publish cached configuration
   sup->>etcd: Load all resources
   etcd-->>sup: Current resource set
-  sup->>h: Publish etcd-backed snapshot
+  sup->>h: Publish etcd-backed configuration
   sup->>etcd: Watch from current revision
   loop Resource changes
     etcd-->>sup: Put / delete / compaction
-    sup->>sup: Validate and rebuild affected snapshot state
-    sup->>h: Publish accepted snapshot
+    sup->>sup: Validate and rebuild affected configuration
+    sup->>h: Publish accepted configuration
     sup->>cache: Store accepted entries
   end
 ```
 
-For a resource update, the supervisor validates the new entry before it
-can enter the live snapshot. For a delete, it removes the entry from the
-next published snapshot. If the etcd watch is compacted, the supervisor
+For a resource update, the configuration watch validates the new entry before
+it can enter the loaded configuration. For a delete, it removes the entry from
+the next published configuration view. If the etcd watch is compacted, AISIX
 performs a full resync.
 
-## Why AISIX uses copy-on-write snapshots
+## Request Consistency
 
-AISIX publishes new snapshots instead of mutating the current snapshot in
-place. Copy-on-write keeps request reads simple and safe:
-
-- readers do not take a global configuration lock
-- a request cannot observe half-applied configuration
-- a failed validation cannot partially modify live state
-- the old snapshot remains available to in-flight requests
+AISIX publishes new configuration views instead of mutating live configuration
+in place. This keeps request reads consistent while configuration changes are
+applied. Request reads do not block while configuration is published, a request
+cannot observe half-applied configuration, and a failed validation cannot
+partially modify live state. The old configuration view remains available to
+requests that already loaded it.
 
 Most resource entries are shared by reference between old and new
-snapshots. Publishing a new snapshot therefore does not duplicate every
+configuration views. Publishing a new view therefore does not duplicate every
 model, key, or policy payload on every update.
 
-## Failure and recovery behavior
+## Failure and Recovery Behavior
 
 If etcd is temporarily unavailable, an already-running proxy continues
-serving from its current snapshot. On restart, a proxy can replay the
-snapshot cache before the etcd connection is fully restored.
+serving from its latest accepted configuration. On restart, a proxy can replay
+the configuration cache before the etcd connection is fully restored.
 
-Operators should still treat the cache as a resilience mechanism, not as
-a replacement for etcd. New configuration changes, deletes, validation
-state, and fleet-wide convergence still depend on restoring the watch
-connection.
+Treat the cache as a resilience mechanism, not as a replacement for etcd. New
+configuration changes, deletes, validation state, and fleet-wide convergence
+still depend on restoring the watch connection.
 
-## When to check this behavior
+## Troubleshooting Checks
 
-When configuration does not appear to take effect:
+When configuration does not appear to take effect, confirm that the admin
+write succeeded, check proxy health and heartbeat state for rejected
+resources, and verify that the target proxy instance has reconnected to
+the configuration source. In multi-replica deployments, test more than
+one instance or wait for the fleet to converge.
 
-1. Confirm the admin write succeeded.
-2. Check proxy health and heartbeat state for rejected resources.
-3. Verify the target proxy instance has reconnected to the configuration
-   source.
-4. If multiple proxy instances are running, test more than one instance
-   or wait for the fleet to converge.
+## Related Reading
 
-## Next steps
-
-- [Configuration propagation](/ai-gateway/configuration/configuration-propagation)
-  explains the user-visible propagation model.
-- [Health checks](/ai-gateway/operations/health-checks) explains how to
-  verify proxy readiness.
-- [Offline resilience](/ai-gateway/cloud/offline-resilience) explains
-  the managed data-plane behavior during temporary control-plane loss.
+For operational guidance, see
+[Configuration propagation](/ai-gateway/configuration/configuration-propagation),
+[Health checks](/ai-gateway/operations/health-checks), and
+[Offline resilience](/ai-gateway/cloud/offline-resilience).

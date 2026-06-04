@@ -1,82 +1,92 @@
 ---
 title: Connect a Managed Data Plane
 description: Bootstrap an AISIX AI Gateway data plane into AISIX Cloud with a gateway certificate bundle and mTLS.
+toc_max_heading_level: 2
 sidebar_position: 15
 ---
 
-This guide explains how an AISIX AI Gateway data plane connects to AISIX Cloud, authenticates with a gateway certificate bundle, and starts receiving projected configuration.
-
-This guide shows how to bootstrap a managed data plane for an environment and what to check if the data plane does not connect to AISIX Cloud.
-
-By the end of this guide, you should understand:
-
-1. Which bootstrap inputs the data plane needs.
-2. Which AISIX Cloud endpoint the data plane should connect to.
-3. How managed mode differs from standalone self-hosted mode.
-4. Which checks to run first when bootstrap fails.
+Connect an AISIX AI Gateway data plane to AISIX Cloud with a gateway
+certificate bundle and mTLS. The data plane receives Cloud-projected
+configuration and serves proxy traffic without exposing the standalone admin
+API.
 
 :::note
-This page describes the data-plane bootstrap shape. It does not cover every dashboard click path for creating environments or issuing certificates.
+AISIX Cloud handles environment creation, certificate issuance, and management
+workflows. The bootstrap instructions below cover data-plane runtime startup.
 :::
 
 ## Prerequisites
 
-Before you start, make sure you have:
+Before you start, prepare an AISIX Cloud environment, a gateway certificate
+bundle issued for that environment, the AISIX AI Gateway container image or
+binary, a writable runtime state directory such as `/var/lib/aisix`, and
+network access from the data plane to the AISIX Cloud data-plane-manager
+endpoint.
 
-- an AISIX Cloud environment for the managed data plane
-- a gateway certificate bundle issued for that environment
-- the AISIX AI Gateway container image or binary
-- a writable runtime state directory, usually `/var/lib/aisix`
-- network access from the data plane to the AISIX Cloud data-plane-manager endpoint
-
-## Bootstrap model
+## Bootstrap Model
 
 Managed bootstrap is certificate-based.
 
-At a high level:
+```mermaid
+flowchart LR
+    Env["Cloud Environment"] --> Cert["Gateway Certificate Bundle"]
+    Cert --> Start["Start Data Plane"]
+    Start --> DPM["Connect to /dp/* over mTLS"]
+    DPM --> Config["Receive Projected Configuration"]
+    Config --> Traffic["Serve Proxy Traffic"]
+```
 
-1. Create or select an environment in AISIX Cloud.
-2. Issue a gateway certificate bundle for that environment.
-3. Start the AISIX data plane with the certificate, private key, CA bundle, and data-plane-manager URL.
-4. Let the data plane connect to the `/dp/*` surface over mTLS.
-5. Receive projected configuration and begin serving requests.
+The `/dp/*` endpoints are mTLS-authenticated. The older `/dp/register`
+bearer-token pattern is not used for this bootstrap path.
 
-The current `/dp/*` surface is mTLS-authenticated. The older `/dp/register` bearer-token pattern is not the current bootstrap path.
+When debugging bootstrap failures, check for a certificate bundle and mTLS
+connection settings rather than a bearer registration token.
 
-That distinction matters when you are debugging bootstrap failures: a managed data plane should have a certificate bundle and mTLS connection settings, not a bearer registration token.
+## Prepare Bootstrap Inputs
 
-## Certificate bundle
+Collect the certificate bundle, Cloud endpoint, config selection, and runtime
+state path before starting the data plane.
 
-The control plane issues a gateway certificate bundle for the target environment.
+### Certificate Bundle
 
-That bundle contains:
+The control plane issues a gateway certificate bundle for the target
+environment. The bundle contains a client certificate PEM, a private key PEM,
+and a CA bundle PEM.
 
-- a client certificate PEM
-- a private key PEM
-- a CA bundle PEM
+The bundle is environment-scoped. The data plane uses it to authenticate to the
+AISIX Cloud data-plane manager and to derive the managed environment scope used
+for projected configuration.
 
-The bundle is environment-scoped. The data plane uses it to authenticate to the AISIX Cloud data-plane manager and to derive the managed environment scope used for projected configuration.
+### Runtime Inputs
 
-## Runtime inputs
+In managed mode, the data plane starts with the Cloud data-plane-manager base
+URL in `AISIX_MANAGED__CP_BASE_URL`, the client certificate in
+`AISIX_MANAGED__CP_CERT_PEM`, the private key in
+`AISIX_MANAGED__CP_KEY_PEM`, and the CA bundle in
+`AISIX_MANAGED__CP_CA_PEM`.
 
-In managed mode, the data plane starts with these environment variables:
+`AISIX_MANAGED__CP_BASE_URL` must point to the Cloud data-plane-manager `/dp/*`
+mTLS endpoints, for example `https://dpm.example.com:7944` or
+`https://dpm:7944` inside the AISIX Cloud Compose network.
 
-- `AISIX_MANAGED__CP_BASE_URL`
-- `AISIX_MANAGED__CP_CERT_PEM`
-- `AISIX_MANAGED__CP_KEY_PEM`
-- `AISIX_MANAGED__CP_CA_PEM`
+Do not point `AISIX_MANAGED__CP_BASE_URL` at the AISIX Cloud web console or
+the control-plane API origin such as `http://api:8080`. The heartbeat URL is
+always built as `<CP_BASE_URL>/dp/heartbeat`, so a wrong base URL usually shows
+up as `/dp/heartbeat` returning `404`.
 
-`AISIX_MANAGED__CP_BASE_URL` must point to the Cloud data-plane-manager `/dp/*` mTLS surface, for example `https://dpm.example.com:7944` or `https://dpm:7944` inside the AISIX Cloud Compose network.
+`AISIX_MANAGED__CP_ETCD_ENDPOINT` is **optional** and most deployments should
+leave it unset. When it is not provided, the data plane derives the etcd
+endpoint from `CP_BASE_URL` because the control plane multiplexes the REST and
+etcd gRPC endpoints on the same `host:port`.
 
-Do not point `AISIX_MANAGED__CP_BASE_URL` at the browser dashboard or the control-plane API origin such as `http://api:8080`. The heartbeat URL is always built as `<CP_BASE_URL>/dp/heartbeat`, so a wrong base URL usually shows up as `/dp/heartbeat` returning `404`.
+Set `AISIX_MANAGED__CP_ETCD_ENDPOINT` only when your control plane serves etcd
+on a different `host:port` than the `/dp/*` REST endpoints. Managing the
+control plane's etcd endpoint is not part of the normal Cloud user workflow.
 
-`AISIX_MANAGED__CP_ETCD_ENDPOINT` is **optional** and most deployments should leave it unset. When it is not provided, the data plane derives the etcd endpoint from `CP_BASE_URL` because the control plane multiplexes the REST and etcd gRPC surfaces on the same `host:port`.
+### Managed Config
 
-Set `AISIX_MANAGED__CP_ETCD_ENDPOINT` only when your control plane serves etcd on a different `host:port` than the `/dp/*` REST surface. Managing or knowing the control plane's etcd endpoint is not part of the normal Cloud user workflow.
-
-## Select the managed config
-
-The published container image's entrypoint selects which config file to load with `AISIX_CONFIG_PATH`. The default is `/etc/aisix/config.yaml`.
+The published container image selects the config file through
+`AISIX_CONFIG_PATH`. The default is `/etc/aisix/config.yaml`.
 
 For a managed data plane, point the entrypoint at the baked managed config:
 
@@ -84,7 +94,9 @@ For a managed data plane, point the entrypoint at the baked managed config:
 AISIX_CONFIG_PATH=/etc/aisix/config.managed.yaml
 ```
 
-`AISIX_CONFIG_PATH` is read by the container entrypoint and is unset before the binary starts. When you run the binary directly, use the equivalent `--config` flag or `AISIX_CONFIG` environment variable:
+`AISIX_CONFIG_PATH` is read by the container entrypoint and is unset before the
+binary starts. When you run the binary directly, use the equivalent `--config`
+flag or `AISIX_CONFIG` environment variable:
 
 ```shell
 aisix --config /path/to/config.managed.yaml
@@ -96,21 +108,22 @@ or:
 AISIX_CONFIG=/path/to/config.managed.yaml aisix
 ```
 
-## Provide certificate material
+### Certificate Files
 
-For deployments that should not inline PEM material into environment variables, use the file-based equivalents instead:
-
-- `AISIX_MANAGED__CP_CERT_FILE`
-- `AISIX_MANAGED__CP_KEY_FILE`
-- `AISIX_MANAGED__CP_CA_FILE`
+For deployments that should not inline PEM material into environment
+variables, use the file-based equivalents:
+`AISIX_MANAGED__CP_CERT_FILE`, `AISIX_MANAGED__CP_KEY_FILE`, and
+`AISIX_MANAGED__CP_CA_FILE`.
 
 The inline and file variants are mutually exclusive for each cert/key/CA pair.
 
-## Start the data plane
+## Start the Data Plane
 
-A managed data plane usually starts from the published container image with the managed config selected and the certificate bundle supplied by environment variables or mounted files.
+A managed data plane usually starts from the published container image with the
+managed config selected and the certificate bundle supplied by environment
+variables or mounted files.
 
-The shape is:
+Use this command pattern:
 
 ```shell
 docker run --rm \
@@ -124,60 +137,65 @@ docker run --rm \
   ghcr.io/api7/ai-gateway:dev
 ```
 
-Replace the example URL, certificate paths, and image tag with the values issued for your environment. If you use inline PEM values instead of files, provide `AISIX_MANAGED__CP_CERT_PEM`, `AISIX_MANAGED__CP_KEY_PEM`, and `AISIX_MANAGED__CP_CA_PEM` together.
+Replace the example URL, certificate paths, and image tag with the values issued
+for your environment. If you use inline PEM values instead of files, provide
+`AISIX_MANAGED__CP_CERT_PEM`, `AISIX_MANAGED__CP_KEY_PEM`, and
+`AISIX_MANAGED__CP_CA_PEM` together.
 
-The data plane persists the issued mTLS bundle, `dp_id`, and runtime state under `/var/lib/aisix` by default. If the container runs as a non-default user and reads bind-mounted PEM files, make `/var/lib/aisix` writable by that same user, for example by mounting a host-owned state directory there.
+The data plane persists the issued mTLS bundle, `dp_id`, and runtime state under
+`/var/lib/aisix` by default. If the container runs as a non-default user and
+reads bind-mounted PEM files, make `/var/lib/aisix` writable by that same user,
+for example by mounting a host-owned state directory there.
 
-Mounting only the `mtls` subdirectory is not enough because the process also writes sidecar files next to it.
+Mounting only the `mtls` subdirectory is not enough because the process also
+writes sidecar files next to it.
 
-## Managed mode behavior
+## Managed Mode Behavior
 
-The managed data plane uses the same `aisix` binary as standalone mode, but it follows the managed bootstrap path instead of binding the standalone admin surface.
+The managed data plane uses the same `aisix` binary as standalone mode, but it
+follows the managed bootstrap path instead of binding the standalone admin API.
 
-In other words:
+Standalone mode accepts local admin writes on `:3001`. Managed mode expects
+control-plane projection and mTLS-authenticated control-plane coordination.
 
-- standalone mode expects operator-driven admin writes on `:3001`
-- managed mode expects control-plane projection and mTLS-authenticated control-plane coordination
+When `managed.enabled` is true, the standalone admin API and Playground are not
+bound. Cloud-owned resources are projected to the data plane instead of being
+created through the local admin API.
 
-When `managed.enabled` is true, the standalone admin API and Playground are not bound. Cloud-owned resources are projected to the data plane instead of being created through the local admin API.
+The Cloud data-plane-manager API receives heartbeat, telemetry, certificate
+rotation, and managed budget-check traffic from the data plane over the mTLS
+connection.
 
-The Cloud data-plane-manager surface includes:
+## Cloud Workflows
 
-- `POST /dp/heartbeat` for liveness and data-plane status
-- `POST /dp/telemetry` for usage-oriented telemetry
-- `POST /dp/rotate-cert` for certificate rotation
-- `GET /dp/budget_check` for managed budget checks
+Manage environment creation, certificate rotation, billing, and usage-event
+details in AISIX Cloud. The data-plane bootstrap path stays focused on
+connection, certificate, and runtime checks.
 
-## What this page does not cover
+## Troubleshooting
 
-This bootstrap guide does not cover:
+### The Data Plane Never Becomes Healthy
 
-- every dashboard click path
-- every environment creation workflow
-- every certificate rotation sequence
-- every billing or usage-event detail
+Check the certificate bundle, `AISIX_MANAGED__CP_BASE_URL`, the trust chain in
+`AISIX_MANAGED__CP_CA_PEM` or `AISIX_MANAGED__CP_CA_FILE`, and write access to
+`/var/lib/aisix`. If you set `AISIX_MANAGED__CP_ETCD_ENDPOINT` explicitly,
+verify that value as well.
 
-## Troubleshooting pointers
+If logs show `/dp/heartbeat` returning `404`, `CP_BASE_URL` usually points at
+the wrong service. It should point at the data-plane-manager mTLS endpoint, not
+the control-plane API or web console origin.
 
-### The data plane never becomes healthy
+### The Data Plane Starts but Does Not Receive Configuration
 
-Check:
+Focus on control-plane projection and environment-scoped resource visibility.
+Managed mode uses Cloud-managed configuration rather than the standalone admin
+API.
 
-- certificate bundle correctness
-- `AISIX_MANAGED__CP_BASE_URL`
-- `AISIX_MANAGED__CP_ETCD_ENDPOINT`, only if you set it explicitly
-- trust chain in `AISIX_MANAGED__CP_CA_PEM` or `AISIX_MANAGED__CP_CA_FILE`
-- writable state directory for `/var/lib/aisix`
+## Related Reading
 
-If logs show `/dp/heartbeat` returning `404`, `CP_BASE_URL` usually points at the wrong service. It should point at the data-plane-manager mTLS endpoint, not the control-plane API or dashboard origin.
-
-### The data plane starts but does not receive configuration
-
-Focus on control-plane projection and environment-scoped resource visibility. Managed mode does not use the standalone admin API as its source of truth.
-
-## Next steps
-
-- [Gateway certificates and managed data plane](../cloud/gateway-certificates-and-managed-dp.md) — review certificate issuance and bootstrap in more detail.
-- [AISIX Cloud overview](../cloud/overview.md) — understand the managed control-plane workflow.
-- [Resource projection](../cloud/resource-projection.md) — learn how Cloud resources become gateway configuration.
-- [Offline resilience](../cloud/offline-resilience.md) — understand how managed data planes continue serving with cached configuration.
+For certificate issuance and bootstrap details, see
+[Gateway certificates and managed data plane](../cloud/gateway-certificates-and-managed-dp.md).
+For managed control-plane workflow, resource projection, and cached
+configuration during connectivity loss, see [AISIX Cloud overview](../cloud/overview.md),
+[Resource projection](../cloud/resource-projection.md), and
+[Offline resilience](../cloud/offline-resilience.md).

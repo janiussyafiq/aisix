@@ -1,26 +1,26 @@
 ---
 title: Enable Response Caching
-description: Enable prompt-response caching in AISIX AI Gateway and verify cache hit and miss behavior using the x-aisix-cache header.
+description: Enable prompt-response caching in AISIX AI Gateway and verify cache hit and miss behavior with the x-aisix-cache header.
 sidebar_position: 83
+toc_max_heading_level: 2
 ---
 
-This tutorial shows you how to enable response caching for chat-completion requests and verify cache behavior with the `x-aisix-cache` response header.
-
-You will:
-
-1. Create a cache policy.
-2. Send a request that misses the cache.
-3. Send the same request again and verify a cache hit.
-4. Delete the cache policy.
+Enable response caching for chat-completion requests and verify cache behavior
+with the `x-aisix-cache` response header. You create a cache policy, check a
+miss, repeat the request to confirm a hit, and remove the policy at the end.
 
 ## Prerequisites
 
-- A running gateway from the [Quickstart](../quickstart)
-- A direct model and caller API key from [Understand admin resources](../quickstart/first-model-first-key-first-request.md) — this tutorial reuses `gpt-4o-prod` and `sk-demo-caller` as canonical names
-- The caller key must include the model in `allowed_models` (or be a wildcard `["*"]`)
-- `jq`, used to capture the cache policy ID
+Before you start, run the gateway from the [Quickstart](../quickstart) and
+create a direct model plus caller API key with
+[Understand Admin Resources](../quickstart/first-model-first-key-first-request.md).
+The commands use `gpt-4o-prod` and `sk-demo-caller`. The caller key must include
+the model in `allowed_models`, or use the wildcard value `["*"]`. Install `jq`
+to capture the cache policy ID from the admin API response.
 
-## Set variables
+## Configure Caching
+
+### Set Variables
 
 ```shell
 export AISIX_ADMIN_KEY="admin-local-only-change-me"
@@ -28,7 +28,7 @@ export AISIX_API_KEY="sk-demo-caller"
 export AISIX_MODEL="gpt-4o-prod"
 ```
 
-## Create a cache policy
+### Create a Cache Policy
 
 ```shell
 CACHE_POLICY_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/cache_policies \
@@ -42,11 +42,16 @@ CACHE_POLICY_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/cache_policies
   }' | jq -r .id)
 ```
 
-This policy applies to all chat-completion requests. See [Caching](../configuration/caching.md) for scoped policies.
+The policy applies to all chat-completion requests. For scoped cache policies,
+see [Caching](../configuration/caching.md).
 
-## Verify a cache miss
+## Verify Cache Behavior
 
-The proxy emits the `x-aisix-cache` header on every response that participates in the cache path. Because admin writes propagate asynchronously, poll until the first cache-participating request returns `miss`:
+### Verify a Cache Miss
+
+The proxy emits the `x-aisix-cache` header on every response that participates
+in the cache path. Because admin writes propagate asynchronously, poll until the
+first cache-participating request returns `miss`:
 
 ```shell
 for i in $(seq 1 20); do
@@ -73,9 +78,10 @@ Look for this line in the response headers:
 x-aisix-cache: miss
 ```
 
-`miss` means the gateway dispatched to the upstream and wrote the response into the cache.
+`miss` means the gateway reached the upstream provider and wrote the response
+into the cache.
 
-## Verify a cache hit
+### Verify a Cache Hit
 
 Repeat the request with the same body and model alias:
 
@@ -95,11 +101,12 @@ Look for:
 x-aisix-cache: hit
 ```
 
-The response body is the cached copy of the first response — the upstream was not called.
+The response body is the cached copy of the first response. AISIX serves it
+without calling the upstream again.
 
-## Verify a different request
+### Verify a Different Request
 
-Change the prompt to confirm the fingerprint is not "always hit":
+Change the prompt to confirm the cache key is tied to the request:
 
 ```shell
 curl -sSi -X POST http://127.0.0.1:3000/v1/chat/completions \
@@ -111,19 +118,23 @@ curl -sSi -X POST http://127.0.0.1:3000/v1/chat/completions \
   }'
 ```
 
-`x-aisix-cache: miss` proves the cache key reflects the request, not a constant.
+`x-aisix-cache: miss` shows that the cache key reflects the request, not a
+constant.
 
-## Delete the cache policy
+## Delete the Cache Policy
 
 ```shell
 curl -sS -X DELETE "http://127.0.0.1:3001/admin/v1/cache_policies/${CACHE_POLICY_ID}" \
   -H "Authorization: Bearer ${AISIX_ADMIN_KEY}"
 ```
 
-Deleting the policy disables caching for that scope. In-memory cache entries are dropped when the gateway restarts.
+Deleting the policy disables caching for that scope. In-memory cache entries are
+dropped when the gateway restarts.
 
-## Next steps
+## Related Reading
 
-- [Caching](../configuration/caching.md) — full field reference and scope matcher details
-- [Headers and error codes](../reference/headers-and-error-codes.md) — `x-aisix-cache` and other published proxy headers
-- [Metrics and logs](../operations/metrics-and-logs.md) — how cache hit rate shows up in metrics
+For field details and scope matcher behavior, see
+[Caching](../configuration/caching.md). For `x-aisix-cache`, other proxy
+headers, and cache metrics, see
+[Headers and error codes](../reference/headers-and-error-codes.md) and
+[Metrics and logs](../operations/metrics-and-logs.md).

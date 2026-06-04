@@ -1,6 +1,7 @@
 ---
 title: Metrics and Logs
 description: Observe AISIX AI Gateway through admin metrics, access logs, usage events, and exporter fan-out.
+toc_max_heading_level: 2
 sidebar_position: 54
 ---
 
@@ -30,7 +31,7 @@ into an external collector.
 ## Prometheus Metrics
 
 `GET /metrics` on the admin listener is the default Prometheus scrape
-endpoint. Operators can change the path with
+endpoint. Change the path with
 `observability.metrics.prometheus.path`, or disable the endpoint with
 `observability.metrics.prometheus.enabled: false`.
 
@@ -44,22 +45,21 @@ request, then check again for series such as `aisix_requests_total` and
 `aisix_tokens_consumed_total`.
 :::
 
-AISIX emits native metric names with the `aisix_` prefix.
+AISIX emits native metric names with the `aisix_` prefix. Start with the
+category that matches the question you are answering.
 
-| Metric category | Examples |
+| Question | Metrics to inspect |
 | --- | --- |
 | Request volume and latency | `aisix_requests_total`, `aisix_request_duration_seconds`, `aisix_llm_requests_total`, `aisix_llm_request_duration_seconds`, `aisix_llm_time_to_first_token_seconds` |
 | Usage and cost | `aisix_tokens_consumed_total`, `aisix_llm_input_tokens_total`, `aisix_llm_output_tokens_total`, `aisix_llm_total_tokens_total`, `aisix_llm_spend_micro_usd_total` |
 | Rate limits and budgets | `aisix_ratelimit_rejections_total`, `aisix_ratelimit_remaining_requests`, `aisix_ratelimit_remaining_tokens`, budget gauges, `aisix_budget_details_present` |
 | Proxy health | `aisix_proxy_requests_total`, `aisix_proxy_failed_requests_total`, `aisix_proxy_request_duration_seconds`, `aisix_proxy_in_flight_requests` |
-| Routing, cache, and exporters | `aisix_deployment_*`, `aisix_routing_*`, Redis, usage-event drop, and OTLP fan-out drop or failure counters |
+| Routing, cache, and exporters | `aisix_deployment_*`, `aisix_routing_*`, Redis counters, usage-event drop counters, OTLP fan-out drop or failure counters |
 
 Labels are limited to values the data plane can reliably know, such as
 `endpoint`, `inbound_protocol`, `provider`, `model`, `upstream_model`,
 `provider_key_id`, `api_key_id`, `team_id`, `user_id`, `status`, and
 `outcome`.
-
-## Managed Data-Plane Metrics
 
 The local `/metrics` endpoint lives on the admin listener. A Cloud
 managed data plane does not bind the standalone admin listener and does
@@ -83,43 +83,42 @@ tracks time to actual output.
 `ttft_ms` is meaningful only on streaming paths. Non-streaming,
 cache-hit, and error paths do not emit a TTFT value.
 
-## Response Headers
-
 Response headers can provide fast per-request hints:
 
-- `x-aisix-call-id` or `x-aisix-request-id` for correlation
-- `x-aisix-cache` on chat cache hit or miss paths
-- `Retry-After` on supported rate-limit rejections
+| Header | Use |
+| --- | --- |
+| `x-aisix-call-id` or `x-aisix-request-id` | Correlate a caller-visible request with logs and telemetry. |
+| `x-aisix-cache` | Identify chat cache hit or miss paths. |
+| `Retry-After` | Show retry timing on supported rate-limit rejections. |
 
 Use headers with logs and metrics. A header can identify the request; it
 does not replace backend observability.
 
-## Exporters
+## Export Telemetry
 
 Observability exporters are dynamic resources configured through the
-admin API or, in managed operation, through AISIX Cloud. Current exporter
-support is `otlp_http`.
+admin API or, in managed operation, through AISIX Cloud. The supported
+exporter type is `otlp_http`.
 
 Use exporters when you need telemetry fan-out to an external
 observability system.
 
 ## Troubleshooting
 
-### Metrics look healthy but callers report failures
+### Metrics Look Healthy but Callers Report Failures
 
 Inspect access logs and caller-visible headers for request-level
 evidence. Metrics can hide individual failures inside aggregates.
 
-### Exporters are configured but downstream traces are missing
+### Exporters Are Configured but Downstream Traces Are Missing
 
 Check exporter enablement, endpoint correctness, outbound connectivity
 from the data plane, and exporter drop/failure counters.
 
-## Next Steps
+## Related Reading
 
-- [Observability exporters](/ai-gateway/configuration/observability-exporters)
-  explains exporter resources.
-- [Health checks](/ai-gateway/operations/health-checks) explains health
-  surfaces.
-- [Headers and error codes](/ai-gateway/reference/headers-and-error-codes)
-  documents caller-visible headers.
+Configure exporter resources with
+[Observability exporters](/ai-gateway/configuration/observability-exporters).
+For health endpoints and caller-visible headers, see
+[Health checks](/ai-gateway/operations/health-checks) and
+[Headers and error codes](/ai-gateway/reference/headers-and-error-codes).

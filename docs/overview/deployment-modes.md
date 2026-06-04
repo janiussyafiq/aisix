@@ -1,14 +1,16 @@
 ---
 title: Deployment Modes
-description: Compare self-hosted AISIX AI Gateway and AISIX Cloud managed data-plane deployments.
+description: Review self-hosted AISIX AI Gateway and AISIX Cloud managed data-plane deployments.
 sidebar_position: 3
 ---
 
-AISIX AI Gateway supports two main deployment modes: a self-hosted gateway and a managed data-plane model coordinated by AISIX Cloud.
+AISIX AI Gateway supports two main deployment modes: a self-hosted gateway and
+a managed data-plane model coordinated by AISIX Cloud.
 
-This overview compares the available operating models so you can choose the one that fits your environment.
+Choose the operating model based on who manages configuration, credentials,
+certificates, and the control-plane workflow.
 
-## How to choose
+## Deployment Choice
 
 Choose **self-hosted gateway** when you want a standalone runtime that you
 operate end to end. You manage the process, admin API, configuration store,
@@ -24,61 +26,64 @@ quickstart. It exposes both listeners locally and makes the resource model
 visible. Move to the managed data-plane path when you are ready to use AISIX
 Cloud as the control plane.
 
-## At a glance
+## Mode Comparison
 
-| Question | Self-hosted gateway | AISIX Cloud managed data plane |
-| --- | --- | --- |
-| Who manages configuration? | You write resources through the standalone admin API. | AISIX Cloud manages and projects environment-scoped resources. |
-| Does the gateway expose an admin listener? | Yes, when configured. | No. The data plane exposes proxy traffic, not the standalone admin write path. |
-| Where do provider credentials live? | In your self-hosted configuration store. | In the Cloud control plane and projected to the data plane. |
-| What is the bootstrap focus? | Local gateway config, admin keys, proxy/admin listeners, and etcd. | Gateway certificates, mTLS control-plane communication, and environment binding. |
+Self-hosted deployments expose the standalone admin API when configured. You
+write resources through that API, store provider credentials in your
+self-hosted configuration store, and bootstrap local gateway config, admin keys,
+proxy and admin listeners, and etcd.
 
-## Self-hosted gateway
+Managed data planes do not expose the standalone admin write path. AISIX Cloud
+manages environment-scoped resources, stores provider credentials in the Cloud
+control plane, and projects configuration to the data plane. Bootstrap focuses
+on gateway certificates, mTLS control-plane communication, and environment
+binding.
 
-In self-hosted mode, you run the gateway directly and expose both:
+## Self-Hosted Gateway
 
-- the proxy listener
-- the admin listener
+In self-hosted mode, you run the gateway directly and expose both the proxy
+listener and the admin listener.
 
-Bootstrap configuration comes from the local config file, and dynamic resources are managed through the admin API and stored in etcd.
+Bootstrap configuration comes from the local config file. Dynamic resources are
+managed through the admin API and stored in etcd.
 
-This mode is a good fit when you want:
-
-- full control over deployment topology
-- direct access to the admin surface
-- self-managed etcd and credentials
-- a local or private operational model without a managed control plane
+This mode is a good fit when you want direct control over deployment topology,
+admin access, etcd, credentials, and upgrades without a managed control plane.
 
 For the hands-on path, see [Run from source](../quickstart/self-hosted.md).
 
-## AISIX Cloud managed data plane
+## AISIX Cloud Managed Data Plane
 
-In managed mode, AISIX Cloud becomes the control plane and AISIX AI Gateway runs as the data plane.
+In managed mode, AISIX Cloud becomes the control plane and AISIX AI Gateway runs
+as the data plane.
 
-At the gateway level, this changes several behaviors:
+At the gateway level, this means the admin API listener is not bound, the
+standalone playground endpoint is not exposed, and dynamic configuration is
+read from the managed etcd path over an mTLS channel.
 
-- the admin API listener is not bound
-- the standalone playground endpoint is not exposed
-- dynamic configuration is read from the managed etcd path over an mTLS channel
+Managed data-plane bootstrap is centered on **gateway certificates** and
+mTLS-authenticated `/dp/*` endpoints. The Cloud flow creates an environment,
+issues a gateway certificate bundle, starts the data plane with that bundle,
+and confirms data-plane heartbeats and configuration propagation.
 
-Managed data-plane bootstrap is centered on **gateway certificates** and mTLS-authenticated `/dp/*` endpoints. The Cloud flow creates an environment, issues a gateway certificate bundle, starts the data plane with that bundle, and then confirms data-plane heartbeats and configuration propagation.
+For the hands-on path, see
+[Connect a managed data plane](../quickstart/aisix-cloud-managed-dp.md).
 
-For the hands-on path, see [Connect a managed data plane](../quickstart/aisix-cloud-managed-dp.md).
+## Cloud Playground Traffic
 
-## Important boundary
-
-Do not assume that every Cloud feature is a gateway feature.
-
-For example, the current AISIX Cloud playground is a control-plane preview path and does **not** send traffic through the managed data plane. That means it does not exercise data-plane cache, guardrails, rate limiting, or routing behavior.
+The AISIX Cloud playground is a control-plane check and does **not** send
+traffic through the managed data plane. It does not exercise data-plane cache,
+guardrails, rate limiting, or routing behavior.
 
 See [Cloud vs. self-hosted](../cloud/cloud-vs-self-hosted.md) for the deeper
-comparison, and use the dedicated AISIX Cloud section for current managed
-control-plane and managed data-plane documentation.
+comparison, and use the dedicated AISIX Cloud section for managed control-plane
+and managed data-plane documentation.
 
-## Next steps
+## Related Reading
 
-- [Core concepts](core-concepts.md) — learn the resources operators configure in either deployment mode.
-- [Cloud vs. self-hosted](../cloud/cloud-vs-self-hosted.md) — compare the operating models in more detail.
-- [Connect a managed data plane](../quickstart/aisix-cloud-managed-dp.md) — understand the Cloud bootstrap path.
-- [AISIX Cloud overview](../cloud/overview.md) — review the managed control-plane workflow.
-- [Feature status](feature-matrix.md) — check current feature status and boundaries.
+The [Core concepts](core-concepts.md) page explains the resources configured in
+either deployment mode. Compare operating models in
+[Cloud vs. self-hosted](../cloud/cloud-vs-self-hosted.md), and review managed
+setup in [Connect a managed data plane](../quickstart/aisix-cloud-managed-dp.md)
+and [AISIX Cloud overview](../cloud/overview.md). For production readiness,
+see [Feature availability](feature-matrix.md).

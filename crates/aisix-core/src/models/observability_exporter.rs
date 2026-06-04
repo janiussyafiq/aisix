@@ -1,20 +1,20 @@
-//! `ObservabilityExporter` — env-scoped fan-out target the DP ships
+//! `ObservabilityExporter` - env-scoped fan-out target the DP ships
 //! per-request telemetry to.
 //!
 //! cp-api writes one row per configured exporter to
 //! `/aisix/<env>/observability_exporters/<uuid>`; the DP loads them on
 //! the watch and composes a fan-out sink that runs alongside the
 //! existing `usage::UsageSink` (which still feeds the cp-api telemetry
-//! pipeline). The DP is the authoritative consumer of these configs —
+//! pipeline). The DP is the authoritative consumer of these configs.
 //! cp-api never opens an HTTP connection to the user's exporter
 //! endpoint, which is the whole reason for DP-direct egress (sensitive
 //! prompt / response content stays on the data plane).
 //!
-//! MVP scope: `kind = "otlp_http"` only — covers Tempo / Loki / Jaeger
+//! MVP scope: `kind = "otlp_http"` only, covering Tempo / Loki / Jaeger
 //! / Honeycomb / Grafana Cloud / Langfuse-via-OTLP because all of them
 //! accept the OTLP/HTTP wire format.
 //!
-//! Wire shape on kine — flat object with the kind-tagged config fields
+//! Wire shape on kine: flat object with the kind-tagged config fields
 //! at top level, matching the `Guardrail` pattern in this crate:
 //!
 //! ```json
@@ -39,7 +39,7 @@ use crate::resource::Resource;
 /// discriminator.
 ///
 /// `tag = "kind"` puts the variant tag inline with the inner struct's
-/// fields — same shape as `GuardrailKind` so the kine wire stays
+/// fields. This is the same shape as `GuardrailKind` so the kine wire stays
 /// consistent across resource types.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -51,13 +51,13 @@ pub enum ExporterKind {
 #[serde(deny_unknown_fields)]
 pub struct OtlpHttpConfig {
     /// Full URL of the OTLP/HTTP traces endpoint. Must already include
-    /// the `/v1/traces` path the receiver expects — we don't append it
+    /// the `/v1/traces` path the receiver expects. We don't append it
     /// because some vendors (Honeycomb, Grafana) use a different path.
     pub endpoint: String,
 
     /// Static headers to attach to every export request. Typical use:
     /// `Authorization: Bearer <api-token>` or vendor-specific keys
-    /// like `x-honeycomb-team`. Values are plaintext at this MVP — the
+    /// like `x-honeycomb-team`. Values are plaintext at this MVP. The
     /// kine path is mTLS-only, so the trust boundary matches
     /// `provider_keys`. Field-level encryption arrives in Phase 2.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -65,7 +65,7 @@ pub struct OtlpHttpConfig {
 }
 
 /// Top-level `ObservabilityExporter` resource. `deny_unknown_fields`
-/// deliberately NOT set — serde's `flatten` + `tag = "kind"`
+/// deliberately NOT set. serde's `flatten` + `tag = "kind"`
 /// interaction makes outer-strict-mode reject the inner discriminator
 /// field. Strict typo rejection happens at the JSON Schema layer
 /// (`schema::validate_observability_exporter`) which the etcd loader
@@ -73,7 +73,7 @@ pub struct OtlpHttpConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct ObservabilityExporter {
     /// Operator-facing label, surfaced in /logs and the dashboard list.
-    /// Not used for routing — the etcd-key uuid is the identity.
+    /// Not used for routing. The etcd-key uuid is the identity.
     pub name: String,
 
     /// Soft kill switch. Disabled exporters stay in the snapshot but
@@ -82,7 +82,7 @@ pub struct ObservabilityExporter {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Discriminated kind block — flattened so `kind` and the inner
+    /// Discriminated kind block. It is flattened so `kind` and the inner
     /// struct's fields land at the same level on the wire.
     #[serde(flatten)]
     pub kind: ExporterKind,
@@ -193,7 +193,7 @@ mod tests {
     fn round_trips_through_serde() {
         let e: ObservabilityExporter = serde_json::from_str(VALID_OTLP).unwrap();
         let v = serde_json::to_value(&e).unwrap();
-        // The wire shape must be flat — `endpoint` and `headers` at
+        // The wire shape must be flat: `endpoint` and `headers` at
         // the top level, NOT nested under `otlp_http`.
         assert_eq!(v["kind"], "otlp_http");
         assert_eq!(v["endpoint"], "https://api.honeycomb.io/v1/traces");

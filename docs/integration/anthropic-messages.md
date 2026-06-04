@@ -2,15 +2,20 @@
 title: Anthropic-Style Messages API
 description: Learn how AISIX AI Gateway handles the Anthropic-style /v1/messages endpoint across Anthropic and non-Anthropic upstreams.
 sidebar_position: 21
+toc_max_heading_level: 2
 ---
 
 AISIX AI Gateway exposes `POST /v1/messages` as an Anthropic-style proxy entry point.
 
-This guide explains the Anthropic-style endpoint surface for clients that already expect Anthropic request and response shapes. If your application is already built around OpenAI-compatible SDKs, start with [OpenAI-compatible API](openai-compatible-api.md) instead.
+Use this endpoint for clients that already expect Anthropic request and response
+formats. If your application is already built around OpenAI-compatible SDKs,
+start with [OpenAI-compatible API](openai-compatible-api.md) instead.
 
-## Request pattern
+## Send a Messages Request
 
-Call the gateway proxy listener with a caller-facing AISIX API key. The `model` value is the AISIX model alias, not necessarily the upstream provider model ID.
+Call the gateway proxy listener with a caller-facing AISIX API key. The
+`model` value is the AISIX model alias, not necessarily the upstream provider
+model ID.
 
 ```shell
 curl -sS -X POST http://127.0.0.1:3000/v1/messages \
@@ -27,96 +32,106 @@ curl -sS -X POST http://127.0.0.1:3000/v1/messages \
 
 For a runnable SDK setup, see [Anthropic SDK quickstart](../quickstart/anthropic-sdk.md).
 
-## Two current execution paths
+This endpoint uses the same proxy API key path as the rest of the gateway:
+authenticate the caller key, resolve the model alias, and enforce
+`allowed_models`. The caller still uses the gateway API key, not the upstream
+Anthropic provider key.
 
-### Anthropic upstream
+`/v1/messages` resolves direct model aliases and routing aliases. Streaming
+requests use the first selected target and do not fail over mid-stream.
+Non-streaming requests can fail over to the next routing target on retryable
+upstream failures.
+
+`/v1/messages/count_tokens` follows the same auth path and can resolve routing
+aliases, but it only uses Anthropic-backed targets. Non-Anthropic targets are
+skipped, and a request with no Anthropic target is rejected by the gateway.
+
+## Upstream Execution
+
+### Anthropic Upstream
 
 When the resolved model provider is `anthropic`, the gateway forwards the request to `{api_base}/v1/messages`.
 
-The gateway:
+The gateway injects `x-api-key` and `anthropic-version`, rewrites `model` to the
+upstream provider model id, and passes Anthropic SSE through for streaming
+requests. This path preserves Anthropic-specific request and response details
+more directly. If you rely on Anthropic-specific semantics, this is the safest
+path.
 
-- injects `x-api-key`
-- injects `anthropic-version`
-- rewrites `model` to the upstream provider model id
-- passes Anthropic SSE through for streaming requests
+### Non-Anthropic Upstream
 
-This path preserves Anthropic-specific request and response details more directly.
+When the resolved model is not an Anthropic provider, the gateway translates the
+Anthropic-style request into the gateway chat format, sends it through the
+resolved provider adapter, and then re-encodes the response as Anthropic-style
+JSON or SSE.
 
-If you rely on Anthropic-specific semantics, this is the safest path.
+This path can route Anthropic-style clients to OpenAI-compatible, Bedrock,
+Vertex, Azure OpenAI, or other configured adapter families. It keeps a stable
+Anthropic-style client API, but it is not feature-identical to native Anthropic
+behavior.
 
-### Non-Anthropic upstream
+## Translation Scope
 
-When the resolved model is not an Anthropic provider, the gateway translates the Anthropic-style request into the gateway chat format, dispatches through the resolved provider key's bridge, and then re-encodes the response as Anthropic-style JSON or SSE.
+The non-Anthropic path supports common text and tool-calling translation. Text
+content is translated into the gateway chat format. Top-level Anthropic `tools`
+become OpenAI-style function tools, and Anthropic `tool_choice` is translated
+when the format is recognized. When a non-Anthropic upstream returns
+OpenAI-style `tool_calls`, AISIX can render them back as Anthropic `tool_use`
+blocks.
 
-This can route Anthropic-shaped clients to OpenAI-compatible, Bedrock, Vertex, Azure OpenAI, or other configured adapter families. It is useful for keeping a stable Anthropic-style client edge, but it should not be treated as feature-identical to native Anthropic behavior.
+Full tool-result round trips, thinking blocks, and image blocks have limited
+compatibility on the non-Anthropic path.
 
-## Current translation scope
+If your application depends on those richer content-block types, use an
+Anthropic-backed model or validate the exact flow in your environment before
+relying on it.
 
-The current non-Anthropic path supports the common text and tool-calling bridge:
+## Error Format
 
-- text content is translated into the gateway chat format
-- top-level Anthropic `tools` are translated into OpenAI-style function tools
-- Anthropic `tool_choice` is translated into OpenAI-style tool choice when the shape is recognized
-- upstream OpenAI-style `tool_calls` can be rendered back as Anthropic `tool_use` blocks
-
-Treat these as compatibility boundaries on the non-Anthropic path:
-
-- full tool-result round trips
-- thinking blocks
-- image blocks
-
-If your application depends on those richer content-block types, prefer a true Anthropic-backed model or validate the exact flow in your environment before relying on it.
-
-## Authentication and authorization
-
-This endpoint uses the same proxy API key path as the rest of the gateway:
-
-- authenticate the caller key
-- resolve the model alias
-- enforce `allowed_models`
-
-The caller still uses the gateway API key, not the upstream Anthropic provider key.
-
-`/v1/messages` resolves direct model aliases and routing aliases. Streaming requests use the first selected target and do not fail over mid-stream. Non-streaming requests can fail over to the next routing target on retryable upstream failures.
-
-`/v1/messages/count_tokens` follows the same auth path and can resolve routing aliases, but it only dispatches to Anthropic-backed targets. Non-Anthropic targets are skipped, and a request with no Anthropic target is rejected at the gateway boundary.
-
-## Error shape
-
-Proxy errors on `/v1/messages` use the Anthropic-shape envelope `{type:"error", error:{type, message}}`. Real Anthropic upstream responses also carry an optional `request_id` field; the gateway omits it.
+Proxy errors on `/v1/messages` use the Anthropic-style envelope
+`{type:"error", error:{type, message}}`. Native Anthropic upstream responses
+can also carry an optional `request_id` field; the gateway omits it.
 
 The gateway emits these `error.type` strings:
 
-- `invalid_request_error` (400, 422)
-- `authentication_error` (401)
-- `permission_error` (403)
-- `not_found_error` (404)
-- `request_too_large` (413)
-- `rate_limit_error` (429)
-- `overloaded_error` (503)
-- `api_error` — all other 4xx/5xx (including 402, which Anthropic's canonical spec maps to `billing_error`)
+| `error.type` | Status |
+| --- | --- |
+| `invalid_request_error` | `400`, `422` |
+| `authentication_error` | `401` |
+| `permission_error` | `403` |
+| `not_found_error` | `404` |
+| `request_too_large` | `413` |
+| `rate_limit_error` | `429` |
+| `overloaded_error` | `503` |
+| `api_error` | All other `4xx` and `5xx`, including `402`, which Anthropic maps to `billing_error`. |
 
-Gateway timeout failures generally surface through the provider bridge rather than as a standalone Anthropic `timeout_error` response.
+Gateway timeout failures generally return through the provider adapter rather
+than as a standalone Anthropic `timeout_error` response.
 
-See Anthropic's [Errors documentation](https://platform.claude.com/docs/en/api/errors) for the canonical type list.
+See Anthropic's [Errors documentation](https://platform.claude.com/docs/en/api/errors) for the provider type list.
 
-## When to use `/v1/messages`
+## When to Use `/v1/messages`
 
-- use it when your application is already Claude-style at the edge
-- use it when Anthropic request semantics are more important than OpenAI compatibility
-- avoid it when your application is already standardized on OpenAI SDKs and OpenAI-style tool-calling
-- prefer an Anthropic-backed model when you depend on Anthropic-specific content block behavior
+Use `/v1/messages` when your application already uses Anthropic-style clients or
+when Anthropic request semantics are more important than OpenAI compatibility.
+If your application is already standardized on OpenAI SDKs and OpenAI-style
+tool calling, use the OpenAI-compatible path instead. Prefer an
+Anthropic-backed model when you depend on Anthropic-specific content block
+behavior.
 
 ## Troubleshooting
 
-### The request works on Anthropic-backed models but behaves differently on other providers
+### The Request Works on Anthropic-Backed Models but Behaves Differently on Other Providers
 
-That is expected. The non-Anthropic translation path is deliberately narrower than native Anthropic behavior.
+The non-Anthropic translation path is narrower than native Anthropic behavior.
+Use an Anthropic-backed model for Anthropic-specific content block semantics.
 
-## Next steps
+## Related Reading
 
-- [Anthropic SDK quickstart](../quickstart/anthropic-sdk.md)
-- [Streaming](streaming.md)
-- [Errors and retries](errors-and-retries.md)
-- [Provider compatibility](../reference/provider-compatibility.md)
-- [Proxy API reference](../reference/proxy-api-reference.md)
+Configure an Anthropic SDK client with
+[Anthropic SDK quickstart](../quickstart/anthropic-sdk.md). For
+Anthropic-style streaming, proxy errors, provider support, and gateway
+behavior, see [Streaming](streaming.md),
+[Errors and retries](errors-and-retries.md),
+[Provider compatibility](../reference/provider-compatibility.md), and
+[Proxy API reference](../reference/proxy-api-reference.md).

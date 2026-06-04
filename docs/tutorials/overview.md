@@ -5,58 +5,49 @@ description: Follow scenario-based AISIX AI Gateway tutorials for protocol trans
 sidebar_position: 79
 ---
 
-Tutorials show complete operator scenarios from setup to verification. Use them
-after you finish the [Quickstart](../quickstart) and understand
-the basic resource flow:
+Tutorials show complete gateway scenarios from setup to verification. Start
+after you finish the [Quickstart](../quickstart) and understand the basic
+resource flow:
 
-```text
-provider key -> model -> caller API key -> proxy request
+```mermaid
+flowchart LR
+  ProviderKey["Provider key"] --> Model["Model alias"]
+  Model --> ApiKey["Caller API key"]
+  ApiKey --> Request["Proxy request"]
 ```
 
-Each tutorial creates real gateway resources, sends proxy traffic, verifies the
+Each tutorial creates gateway resources, sends proxy traffic, verifies the
 observable result, and includes cleanup steps.
 
-## Before you start
+## Before You Start
 
-You should have:
+Start with a running standalone gateway from the [Quickstart](../quickstart),
+an admin key for `Authorization: Bearer YOUR_ADMIN_KEY`, a caller key such as
+`sk-demo-caller`, and at least one provider credential for live upstream
+traffic.
 
-- a running standalone gateway from the [Quickstart](../quickstart)
-- an admin key for `Authorization: Bearer YOUR_ADMIN_KEY`
-- a caller key such as `sk-demo-caller`
-- at least one provider credential you can use for live upstream traffic
+Admin writes propagate asynchronously to the loaded proxy configuration. Where
+propagation matters, the examples poll for the expected gateway behavior
+instead of relying on a fixed delay.
 
-Admin writes propagate asynchronously to the proxy snapshot. The tutorials use
-polling where propagation matters, so do not replace those checks with fixed
-sleep calls in automation.
+## Choose a Tutorial
 
-## Choose a tutorial
+Start with [Use an OpenAI client with an Anthropic upstream](openai-client-to-anthropic-upstream.md)
+to see protocol translation: the caller receives an OpenAI-compatible response
+while the gateway calls Anthropic Messages upstream.
 
-| Goal | Tutorial | What you verify |
-| --- | --- | --- |
-| Keep an OpenAI-style client while using an Anthropic upstream | [Use an OpenAI client with an Anthropic upstream](openai-client-to-anthropic-upstream.md) | The caller receives an OpenAI-shaped response while the gateway calls Anthropic Messages upstream. |
-| Keep one stable model alias across primary and secondary targets | [Build a virtual model with failover](build-a-virtual-model-with-failover.md) | A broken primary target fails over to the secondary target and reports `x-aisix-served-by`. |
-| Block forbidden prompt content at the gateway boundary | [Add keyword guardrails](add-keyword-guardrails.md) | A clean request passes and a forbidden request returns `422 content_filter`. |
-| Reuse identical chat-completion responses | [Enable response caching](enable-response-caching.md) | The first request returns `x-aisix-cache: miss`; the repeated request returns `x-aisix-cache: hit`. |
+[Build a virtual model with failover](build-a-virtual-model-with-failover.md)
+shows resilient routing with one stable model alias across primary and
+secondary targets. [Add Keyword Guardrails](add-keyword-guardrails.md) shows
+how to block forbidden prompt content at the gateway. [Enable Response
+Caching](enable-response-caching.md) shows cache miss and hit behavior for
+repeated chat-completion requests.
 
-## Suggested order
+## Related Reading
 
-If you are learning the product for the first time, run the tutorials in this
-order:
-
-1. [Use an OpenAI client with an Anthropic upstream](openai-client-to-anthropic-upstream.md)
-2. [Build a virtual model with failover](build-a-virtual-model-with-failover.md)
-3. [Add keyword guardrails](add-keyword-guardrails.md)
-4. [Enable response caching](enable-response-caching.md)
-
-This order starts with the gateway's core value — stable caller contracts in
-front of provider-specific upstreams — then adds resilience, policy, and
-optimization.
-
-## Where to go next
-
-- [Configuration overview](../configuration/overview.md) explains the resource
-  model behind the tutorials.
-- [Operations](../operations/production-deployment.md) covers production
-  deployment, telemetry, health checks, and troubleshooting.
-- [Reference](../reference/proxy-api-reference.md) documents the proxy API
-  surface and generated resource schemas.
+For the resource model behind the tutorials, see
+[Configuration overview](../configuration/overview.md). For production
+deployment and runtime checks, see
+[Operations](../operations/production-deployment.md). For API and schema
+details, see [Proxy API reference](../reference/proxy-api-reference.md) and
+[Resource schemas](../reference/resource-schemas.md).

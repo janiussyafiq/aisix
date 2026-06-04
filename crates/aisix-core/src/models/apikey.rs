@@ -1,7 +1,7 @@
-//! `ApiKey` entity — the caller-facing credential presented in
-//! `Authorization: Bearer <plaintext>` (spec §3, §7).
+//! `ApiKey` entity - the caller-facing credential presented in
+//! `Authorization: Bearer <plaintext>` (spec sections 3 and 7).
 //!
-//! Self-hosted CP (prd-09a §9A.7B.4): the KV payload stores
+//! Self-hosted CP (prd-09a section 9A.7B.4): the KV payload stores
 //! **`key_hash`** (SHA-256 hex of the plaintext bearer) instead of
 //! the plaintext. cp-api stores only the hash and shows the
 //! plaintext to the user exactly once at create time. The DP proxy
@@ -18,13 +18,13 @@ use crate::resource::Resource;
 #[serde(deny_unknown_fields)]
 pub struct ApiKey {
     /// SHA-256 hex of the plaintext bearer. Secondary-indexed for
-    /// O(1) auth — the proxy hashes incoming bearers before lookup.
+    /// O(1) auth. The proxy hashes incoming bearers before lookup.
     pub key_hash: String,
 
     /// Whitelisted Model identifiers. cp-api stores them as model
-    /// UUIDs; self-hosted dev fixtures may still use names — the DP
+    /// UUIDs; self-hosted dev fixtures may still use names. The DP
     /// does string equality and doesn't care which. An **empty
-    /// array** denies every model (spec §3 authz rule).
+    /// array** denies every model (spec section 3 authz rule).
     pub allowed_models: Vec<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,7 +50,7 @@ impl ApiKey {
     /// Bearer <plaintext>` value to the form persisted in the
     /// snapshot (and on the cp-api side as `api_keys.key_hash`).
     /// SHA-256, lowercase hex. Both sides MUST use this exact
-    /// function — test fixtures and the `aisix-proxy::auth`
+    /// function. Test fixtures and the `aisix-proxy::auth`
     /// extractor both call through here.
     pub fn hash_bearer(plaintext: &str) -> String {
         use sha2::{Digest, Sha256};
@@ -62,7 +62,7 @@ impl ApiKey {
     /// True if this key is allowed to call the given Model.
     ///
     /// A wildcard entry `"*"` grants access to every model. An empty
-    /// `allowed_models` list denies everything (spec §3 authz rule).
+    /// `allowed_models` list denies everything (spec section 3 authz rule).
     pub fn can_access(&self, model_name: &str) -> bool {
         self.allowed_models
             .iter()
@@ -93,15 +93,15 @@ impl Resource for ApiKey {
         &self.runtime_id
     }
 
-    /// For ApiKey the "secondary-indexed" field is `key_hash` — the
+    /// For ApiKey the "secondary-indexed" field is `key_hash`. The
     /// proxy hashes the incoming bearer once and uses that as the
     /// lookup key. The name-index in the snapshot therefore points
-    /// from key_hash → id.
+    /// from key_hash to id.
     fn name(&self) -> &str {
         &self.key_hash
     }
 
-    /// Path segment under `/aisix/<env>/`. v3 (prd-09a §9A.7B.2) uses
+    /// Path segment under `/aisix/<env>/`. v3 (prd-09a section 9A.7B.2) uses
     /// the underscored form `api_keys` to align with cp-api migration
     /// 008's table name. v2 used `apikeys` (no underscore); the v3
     /// dp-manager only writes the underscored form.

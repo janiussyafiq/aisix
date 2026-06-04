@@ -1,75 +1,72 @@
 ---
 title: Configuration Propagation
-description: Understand how admin writes propagate through etcd and the in-memory gateway snapshot in AISIX AI Gateway.
+description: Understand how admin writes become visible to proxy requests in AISIX AI Gateway.
+toc_max_heading_level: 2
 sidebar_position: 41
 ---
 
-AISIX AI Gateway does not apply admin writes directly on the proxy hot path.
+AISIX AI Gateway accepts configuration writes through the Admin API, then makes
+the accepted resources visible to proxy requests after each proxy applies the
+latest configuration.
 
-Instead, the current runtime model is:
+Propagation follows this path:
 
-1. write a dynamic resource through the admin API
-2. persist it to the config store and etcd
-3. let the watch supervisor rebuild and publish a fresh in-memory snapshot
-4. serve new proxy requests from that updated snapshot
+```mermaid
+flowchart LR
+    Admin["Admin API write"] --> Store["Configuration store"]
+    Store --> Watch["Configuration watch"]
+    Watch --> Loaded["Loaded proxy configuration"]
+    Loaded --> Proxy["New proxy requests"]
+```
 
-This separation is central to the product design: admin writes and proxy reads are intentionally decoupled.
+This separation keeps proxy requests on the loaded configuration path instead
+of waiting on configuration storage.
 
-## What to expect
+## Propagation Behavior
 
-Propagation is asynchronous.
+Propagation is asynchronous. An Admin API write can succeed before every proxy
+has loaded the updated configuration.
 
-In normal local conditions, propagation is usually visible within one watch cycle. In CI and shared environments, end-to-end readiness can take longer, so positive polling is safer than a fixed sleep.
+In normal local conditions, propagation is usually visible within one watch
+cycle. In shared or multi-replica environments, readiness can take longer, so
+poll for the expected proxy-visible state instead of relying on a fixed delay.
 
-Operators should treat propagation as fast but asynchronous, not as instantaneous.
+After writing dependent resources such as a provider key, model, or API key,
+wait for propagation before sending a production-like proxy request. This
+matters most when one resource depends on another.
 
-## Practical guidance
+Use polling when possible. Poll `GET /v1/models` until the model appears for
+the caller key, or poll the target proxy endpoint until a known propagation
+error disappears. Use a short delay only for simple local demos. Polling is the
+safest approach for automation and rollout checks.
 
-After writing dependent resources such as:
+`GET /admin/v1/health` can expose watch freshness information through the
+optional `config` block when configuration freshness is available.
 
-- provider key
-- model
-- API key
+That block includes `snapshot_revision` and `snapshot_age_seconds`. Use these
+fields to detect whether a proxy has stopped receiving configuration updates.
 
-wait for propagation before sending a production-like proxy request, especially when one resource depends on another.
+## Readiness Checks
 
-Use one of these approaches:
-
-- poll `GET /v1/models` until the model appears
-- poll the target endpoint until a known propagation error disappears
-- use a short delay only for simple local demos
-
-Polling is the safest approach for automation and tests.
-
-## Health visibility
-
-`GET /admin/v1/health` can expose watch freshness information through the optional `config` block when the watch supervisor is wired.
-
-That block includes:
-
-- `snapshot_revision`
-- `snapshot_age_seconds`
-
-This helps detect a stale or wedged config stream.
-
-## Operator guidance
-
-- do not assume a successful admin write means immediate proxy readiness
-- prefer readiness polling in automation over `sleep`
-- use admin health to distinguish stale-config problems from proxy-request problems
+Treat a successful admin write as acceptance of the resource, not immediate
+proxy readiness. Prefer readiness polling in automation over `sleep`, and use
+admin health to distinguish configuration-propagation problems from
+proxy-request problems.
 
 ## Troubleshooting
 
-### Admin writes succeed but callers still get `404`
+### Admin Writes Succeed but Callers Still Get `404`
 
-Suspect propagation first, especially for newly created models and API keys.
+Suspect propagation first for newly created models and API keys.
 
-### One environment looks stale
+### One Environment Looks Stale
 
-Check snapshot freshness and watch health rather than retrying the same admin write repeatedly.
+Check configuration freshness and watch health rather than retrying the same
+admin write repeatedly.
 
-## Next steps
+## Related Reading
 
-- [Admin API](admin-api.md)
-- [Health checks](../operations/health-checks.md)
-- [Testing and verification](../operations/testing-and-verification.md)
+[Admin API](admin-api.md) covers dynamic-resource management through the
+standalone admin listener. For runtime signals and readiness checks, see
+[Health checks](../operations/health-checks.md) and
+[Testing and verification](../operations/testing-and-verification.md).

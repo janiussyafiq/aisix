@@ -1,171 +1,110 @@
 ---
 title: Troubleshooting
 description: Diagnose the most common startup, configuration, upstream, policy, and managed-path failures in AISIX AI Gateway.
+toc_max_heading_level: 2
 sidebar_position: 56
 ---
 
-This troubleshooting guide starts from symptoms that appear after a deployment is running but does not behave as
-expected. Start with the symptom, then narrow the failure to startup,
-configuration propagation, caller access, policy, upstream provider, or
-managed data-plane connectivity.
+When a running deployment does not behave as expected, start with the symptom
+and narrow the failure to startup, configuration propagation, caller access,
+policy, upstream provider, or managed data-plane connectivity.
 
-## Fast triage order
+## Start with the Failing Layer
 
-When you are not sure where to start:
+When you are not sure where to start, first confirm proxy `GET /livez`. In
+standalone mode, also check admin `GET /livez` and `GET /admin/v1/health`.
+Then verify whether the model alias appears in `GET /v1/models` for the caller
+key and send one real request to the endpoint that fails.
 
-1. Check proxy `GET /livez`.
-2. In standalone mode, check admin `GET /livez` and
-   `GET /admin/v1/health`.
-3. Check whether the model alias appears in `GET /v1/models` for the
-   caller key.
-4. Send one real request to the endpoint that fails.
-5. Use response headers, logs, metrics, and usage events to identify the
-   failing layer.
+Use response headers, logs, metrics, and usage events to identify the failing
+layer before changing configuration.
 
-## Startup or etcd connectivity problems
+## Startup and Configuration
 
-Symptoms:
-
-- process fails during startup
-- watch freshness stalls
-- errors mention etcd transport, DNS, TLS, or connection failure
-
-Check:
-
-- `etcd.endpoints`
-- etcd network reachability from the gateway host or container
-- etcd TLS certificate paths and file permissions
-- whether etcd is reachable before the gateway starts
+| Symptom | Check |
+| --- | --- |
+| Process fails during startup. | `etcd.endpoints`, network reachability from the gateway host or container, and etcd TLS certificate paths and permissions. |
+| Watch freshness stalls. | etcd connectivity, TLS configuration, and configuration watch health. |
+| Errors mention etcd transport, DNS, TLS, or connection failure. | Whether etcd is reachable before the gateway starts. |
 
 In standalone mode, etcd reachability is a hard dependency for dynamic
-resource state. Treat it as part of the gateway control-plane boundary.
+resource state. Treat it as part of the gateway control plane.
 
-## Configuration propagation problems
+### Configuration Propagation
 
-Symptoms:
+Common symptoms include a new model missing from `GET /v1/models`, a request
+that fails immediately after creating resources, a model that resolves with
+missing referenced resources, or an error that mentions an unknown
+`provider_key_id`.
 
-- a new model does not appear in `GET /v1/models`
-- a request fails immediately after creating resources
-- a model resolves but referenced resources are missing
-- errors mention an unknown `provider_key_id`
+The usual cause is a watch-driven snapshot that has not caught up, or a
+resource that was rejected before entering the live snapshot.
 
-Common cause:
+Confirm that the admin write succeeded, then poll `GET /v1/models` or the
+target endpoint instead of sleeping. In standalone mode, inspect
+`GET /admin/v1/health` for snapshot freshness. Check heartbeat or health state
+when a resource may have been rejected.
 
-- the watch-driven snapshot has not caught up yet, or the resource was
-  rejected before entering the live snapshot
+## Request Failures
 
-Check:
+Use the caller-visible status code and the failing request path to narrow the
+problem. Check caller access before provider credentials when the request is
+rejected before reaching the upstream provider.
 
-1. Confirm the admin write succeeded.
-2. Poll `GET /v1/models` or the target endpoint instead of sleeping.
-3. Inspect `GET /admin/v1/health` for snapshot freshness in standalone
-   mode.
-4. Check heartbeat or health state for rejected resources.
+### Caller Access
 
-## Caller access problems
+| Symptom | Check |
+| --- | --- |
+| Request is rejected before reaching the provider. | Caller API key value, authorization header, and `allowed_models`. |
+| Model discovery does not show the expected alias. | Model alias spelling and whether the alias should appear in `/v1/models`. |
+| One API key works but another does not. | Key-specific `allowed_models`, team scope, and user scope when policy depends on those fields. |
 
-Symptoms:
+### Guardrail Blocking
 
-- request is rejected before reaching the provider
-- model discovery does not show the expected alias
-- one API key works but another does not
+When the proxy returns `422` with error type `content_filter`, check enabled
+keyword guardrails, `hook_point`, and the prompt or response content that
+triggered the rule.
 
-Check:
-
-- caller API key value and authorization header
-- `allowed_models` on the API key
-- model alias spelling
-- team or user scope if rate-limit or budget policy depends on those
-  fields
-
-## Policy problems
-
-### Guardrail blocking
-
-Symptoms:
-
-- proxy returns `422`
-- error type is `content_filter`
-
-Check:
-
-- enabled keyword guardrails
-- `hook_point`
-- prompt or response content that triggered the rule
-
-Current live guardrail behavior applies to `POST /v1/chat/completions` and
+Guardrail blocking applies to `POST /v1/chat/completions` and
 `POST /v1/messages`.
 
-### Rate-limit or budget denial
+### Rate-Limit or Budget Denial
 
-Symptoms:
+When the proxy returns `429`, includes `Retry-After` or rate-limit headers, or
+denies traffic after a managed budget check, inspect API-key and model-level
+rate limits, matching `RateLimitPolicy` resources, Cloud budget policy in
+managed mode, and whether multiple proxy replicas affect in-process counters.
 
-- proxy returns `429`
-- response includes `Retry-After` or rate-limit headers
-- managed deployment denies traffic after budget evaluation
+### Upstream Provider
 
-Check:
+| Symptom | Check |
+| --- | --- |
+| Model health degrades. | Provider outage, quota state, and data-plane outbound network path. |
+| Requests fail after model resolution succeeds. | Provider key secret, `api_base`, and upstream model id. |
+| Provider-specific auth or network errors appear in logs. | Provider-specific authentication behavior and outbound connectivity from the data plane. |
 
-- API-key and model-level rate limits
-- scoped `RateLimitPolicy` resources
-- Cloud budget policy in managed mode
-- whether multiple proxy replicas affect in-process counters
+### Admin Playground
 
-## Upstream provider problems
+When the admin playground returns `playground not wired: proxy router not
+configured`, the standalone playground is unavailable in that gateway instance.
 
-Symptoms:
+Check whether the gateway is running in managed mode, whether the deployment
+binds the standalone admin listener, and whether normal proxy requests work on
+`/v1/chat/completions`.
 
-- model health degrades
-- requests fail after model resolution succeeds
-- provider-specific auth or network errors appear in logs
+## Managed Data Plane
 
-Check:
+| Symptom | Check |
+| --- | --- |
+| Managed heartbeat fails. | Certificate bundle, trust root, `AISIX_MANAGED__CP_BASE_URL`, and data-plane-manager `/dp/*` reachability. |
+| Cloud shows resources that live traffic does not use. | Resource environment scope and projection status. |
+| Budget checks fail or appear unavailable. | Managed control-plane connectivity and budget-check reachability. |
+| Cloud playground succeeds but live traffic differs. | Whether the request was sent through the live managed data plane. |
 
-- provider key secret and `api_base`
-- upstream model id
-- provider-specific auth shape
-- outbound network path from the data plane
-- provider outage or quota state
+## Related Reading
 
-## Managed data-plane problems
-
-Symptoms:
-
-- managed heartbeat fails
-- Cloud shows resources that live traffic does not use
-- budget checks fail or appear unavailable
-- Cloud playground succeeds but live traffic differs
-
-Check:
-
-- certificate bundle and trust root
-- `AISIX_MANAGED__CP_BASE_URL`
-- data-plane-manager `/dp/*` reachability
-- resource environment scope
-- projection status
-- whether the request was sent through the live managed data plane
-
-## Playground issue
-
-Symptom:
-
-- admin playground returns `playground not wired: proxy router not configured`
-
-Meaning:
-
-- the standalone playground is unavailable in this process
-
-Check:
-
-- whether the gateway is running in managed mode
-- whether the deployment binds the standalone admin listener
-- whether normal proxy requests work on `/v1/chat/completions`
-
-## Next steps
-
-- [Health checks](/ai-gateway/operations/health-checks) explains the
-  health endpoints.
-- [Testing and verification](/ai-gateway/operations/testing-and-verification)
-  gives a production smoke-test flow.
-- [Configuration propagation](/ai-gateway/configuration/configuration-propagation)
-  explains snapshot propagation.
+[Health checks](/ai-gateway/operations/health-checks) covers health endpoints,
+[Testing and verification](/ai-gateway/operations/testing-and-verification)
+covers production smoke tests, and
+[Configuration propagation](/ai-gateway/configuration/configuration-propagation)
+explains snapshot propagation.

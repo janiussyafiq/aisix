@@ -1,13 +1,13 @@
-//! `ProviderKey` entity — managed upstream provider credential.
+//! `ProviderKey` entity - managed upstream provider credential.
 //!
 //! A ProviderKey lets operators store an upstream provider's API key
-//! (OpenAI, Anthropic, Gemini, DeepSeek, …) once and have many Models
+//! (OpenAI, Anthropic, Gemini, DeepSeek, etc.) once and have many Models
 //! reference it by id (`provider_key_id`). Rotating the secret then
 //! becomes a single PUT against the ProviderKey rather than rewriting
 //! every Model that uses it.
 //!
 //! Naming intentionally aligns with the AISIX-Cloud control plane's
-//! `ProviderKey` table — same concept, same name. The standalone
+//! `ProviderKey` table: same concept, same name. The standalone
 //! Admin API and the SaaS-tier dashboard exposition stay in lockstep.
 //!
 //! etcd path: `{prefix}/provider_keys/{uuid}`. Secondary index on
@@ -35,7 +35,7 @@ pub struct ProviderKey {
     pub display_name: String,
 
     /// Upstream provider's API key, stored in plaintext on the
-    /// standalone path (the etcd channel is mTLS-only — same trust
+    /// standalone path (the etcd channel is mTLS-only, with the same trust
     /// boundary as Guardrail credentials and ObservabilityExporter
     /// headers). On the AISIX-Cloud path cp-api decrypts the
     /// envelope-encrypted secret at projection time and writes the
@@ -68,7 +68,7 @@ pub struct ProviderKey {
     /// Wire-shape adapter (`openai` / `anthropic` / `bedrock` /
     /// `vertex` / `azure-openai`). The family-fallback dispatch key for
     /// `Hub::dispatch_two_tier` when the specialized lookup misses;
-    /// long-tail OpenAI-compat vendors (xai, openrouter, groq, …) reach
+    /// long-tail OpenAI-compat vendors (xai, openrouter, groq, etc.) reach
     /// the right bridge through this path without a DP code change.
     /// cp-api always writes it; a `ProviderKey` that resolves to neither
     /// a specialized `provider` nor a registered `adapter` family is a
@@ -85,7 +85,7 @@ pub struct ProviderKey {
     #[serde(default)]
     pub telemetry_tags: TelemetryTags,
 
-    /// Per-key request-shape overrides — see issue #302 §5
+    /// Per-key request-shape overrides. See issue #302 section 5
     /// `RuntimeConfig.request`. `None` until cp-api ships the block.
     /// No dispatch path reads it in this PR; #301 already provides
     /// the primitive apply functions in `aisix-provider-openai` that
@@ -93,7 +93,7 @@ pub struct ProviderKey {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<RequestOverrides>,
 
-    /// Per-key response-shape overrides — see issue #302 §5
+    /// Per-key response-shape overrides. See issue #302 section 5
     /// `RuntimeConfig.response`. `None` until cp-api ships the block.
     /// Same Phase D wiring story as [`Self::request`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,20 +105,20 @@ pub struct ProviderKey {
     /// Defaults (when the field is absent on the wire) to the 4
     /// canonical credential headers: `authorization`, `cookie`,
     /// `set-cookie`, `x-api-key`. Customers can:
-    ///   - Remove a default entry → that header reaches upstream
+    ///   - Remove a default entry: that header reaches upstream
     ///     (the dashboard warns when removing a default).
-    ///   - Add custom entries → extra headers stripped.
+    ///   - Add custom entries: extra headers stripped.
     ///
     /// Case-insensitive. Compared lowercased against the inbound
     /// header name. Non-configurable headers (`host`, `content-length`,
-    /// RFC 7230 §6.1 hop-by-hop) are stripped separately by the
+    /// RFC 7230 section 6.1 hop-by-hop) are stripped separately by the
     /// passthrough handler and cannot be removed via this list.
     ///
     /// Entries are normalised on deserialize via
     /// `normalize_strip_headers`: trimmed, lowercased, dedup'd,
     /// empties dropped. This prevents the "operator typed `' cookie '`,
     /// the strip set has `' cookie '` but the inbound header is
-    /// `'cookie'` → no match → silent credential leak" footgun.
+    /// `'cookie'`: no match, causing a silent credential leak" footgun.
     #[serde(
         default = "default_strip_headers",
         deserialize_with = "deserialize_normalized_strip_headers"
@@ -183,7 +183,7 @@ where
 
 /// Telemetry attribution tags emitted alongside requests routed
 /// through this `ProviderKey`. Introduced as a skeleton for issue
-/// #302 Phase A — no metric/log path consumes these fields yet.
+/// #302 Phase A. No metric/log path consumes these fields yet.
 ///
 /// The `#[serde(default)]` on each field plus `#[derive(Default)]`
 /// means an omitted block or omitted individual key both yield the
@@ -221,15 +221,15 @@ pub struct TelemetryTags {
     pub byo_label: Option<String>,
 }
 
-/// Per-`ProviderKey` request-shape overrides — see issue #302 §5
+/// Per-`ProviderKey` request-shape overrides. See issue #302 section 5
 /// `RuntimeConfig.request`. Each field maps 1:1 onto a primitive
 /// apply function in [`aisix-provider-openai`'s `overrides`
 /// module](https://github.com/api7/ai-gateway/blob/main/crates/aisix-provider-openai/src/overrides.rs):
 ///
-/// - `param_renames` → `apply_param_renames`
-/// - `param_constraints` → `apply_param_constraints`
-/// - `default_headers` → `apply_default_headers`
-/// - `default_body_fields` → `apply_default_body_fields`
+/// - `param_renames` maps to `apply_param_renames`
+/// - `param_constraints` maps to `apply_param_constraints`
+/// - `default_headers` maps to `apply_default_headers`
+/// - `default_body_fields` maps to `apply_default_body_fields`
 ///
 /// `f64` in [`ParamConstraints`] is the reason the parent
 /// [`ProviderKey`] derives `PartialEq` rather than `Eq`.
@@ -259,11 +259,11 @@ pub struct RequestOverrides {
     pub default_body_fields: Map<String, Value>,
 }
 
-/// Numeric range clamps applied to chat-completion request bodies —
-/// the on-disk shape of issue #302 §5 `param_constraints`. Phase A
+/// Numeric range clamps applied to chat-completion request bodies:
+/// the on-disk shape of issue #302 section 5 `param_constraints`. Phase A
 /// scope is `temperature` only; `top_p` / `frequency_penalty` are
 /// deferred until a real upstream quirk demands them (YAGNI per
-/// `CLAUDE.md` §2).
+/// `CLAUDE.md` section 2).
 ///
 /// `f64` not `Eq`: NaN comparisons make a derived `Eq` unsound.
 /// [`PartialEq`] is enough for the round-trip test.
@@ -281,26 +281,26 @@ pub struct ParamConstraints {
     pub temperature_min: Option<f64>,
 }
 
-/// Per-`ProviderKey` response-shape overrides — see issue #302 §5
+/// Per-`ProviderKey` response-shape overrides. See issue #302 section 5
 /// `RuntimeConfig.response`. Each field maps onto behavior the
 /// [`aisix-provider-openai`'s `overrides`
 /// module](https://github.com/api7/ai-gateway/blob/main/crates/aisix-provider-openai/src/overrides.rs)
 /// already implements:
 ///
-/// - `stream_done_marker` → `apply_stream_done_marker_policy`
-/// - `content_list_to_string` → `apply_content_list_to_string`
+/// - `stream_done_marker` maps to `apply_stream_done_marker_policy`
+/// - `content_list_to_string` maps to `apply_content_list_to_string`
 ///   (applied to the *request* body before send when the upstream
 ///   only accepts string content)
-/// - `reasoning_field` → `extract_reasoning_field`
+/// - `reasoning_field` maps to `extract_reasoning_field`
 ///
-/// `error_envelope` is on-disk only — issue #302 §5 keeps it as a
+/// `error_envelope` is on-disk only. Issue #302 section 5 keeps it as a
 /// `"openai" | "passthrough"` string so cp-api can iterate without
 /// a Rust-side enum migration. Phase D pins the closed set.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ResponseOverrides {
     /// Stream `[DONE]` terminator expectation. `None` means "no
-    /// opinion" — same effect as [`StreamDoneMarker::Optional`].
+    /// opinion", with the same effect as [`StreamDoneMarker::Optional`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_done_marker: Option<StreamDoneMarker>,
 
@@ -313,7 +313,7 @@ pub struct ResponseOverrides {
     /// On-disk discriminator for the error-translation strategy.
     /// `"openai"` projects upstream errors into the OpenAI envelope;
     /// `"passthrough"` returns the upstream body as-is. Open string
-    /// in this PR (issue #302 §5 wire shape); Phase D pins the
+    /// in this PR (issue #302 section 5 wire shape); Phase D pins the
     /// closed set in a follow-up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_envelope: Option<String>,
@@ -325,8 +325,8 @@ pub struct ResponseOverrides {
     pub reasoning_field: Option<String>,
 }
 
-/// Stream `[DONE]` terminator policy for an SSE response — the
-/// on-disk shape of issue #302 §5 `stream_done_marker`. The wire
+/// Stream `[DONE]` terminator policy for an SSE response: the
+/// on-disk shape of issue #302 section 5 `stream_done_marker`. The wire
 /// form is the lowercased variant name (`"required"` / `"optional"`
 /// / `"none"`) so cp-api JSON keeps the same set the original spec
 /// drafted.
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn byo_telemetry_shape_deserialises() {
         // BYO entries have null branded_provider and a non-null
-        // byo_label — the dual-label shape Phase A introduces.
+        // byo_label: the dual-label shape Phase A introduces.
         let p: ProviderKey = serde_json::from_str(
             r#"{
                 "display_name": "internal-llm",
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn telemetry_tags_rejects_unknown_field() {
-        // TelemetryTags is `deny_unknown_fields` — stops cp-api from
+        // TelemetryTags is `deny_unknown_fields`, which stops cp-api from
         // silently shipping a new tag the DP can't see.
         let r: Result<ProviderKey, _> = serde_json::from_str(
             r#"{
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn adapter_rejects_unknown_string() {
-        // `adapter` is the closed `Adapter` enum — unknown shape
+        // `adapter` is the closed `Adapter` enum; unknown shape
         // strings must fail loudly rather than silently fall through.
         let r: Result<ProviderKey, _> = serde_json::from_str(
             r#"{"display_name":"x","secret":"k","adapter":"not-a-real-adapter"}"#,
@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn request_overrides_empty_object_deserialises_to_defaults() {
         // `{"request": {}}` must succeed and yield an all-default
-        // RequestOverrides — empty maps, no constraints.
+        // RequestOverrides: empty maps, no constraints.
         let p: ProviderKey =
             serde_json::from_str(r#"{"display_name":"x","secret":"k","request":{}}"#).unwrap();
         let req = p.request.expect("request was Some");
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn request_overrides_full_payload_deserialises() {
-        // Mirror the on-disk example in issue #302 §5 exactly.
+        // Mirror the on-disk example in issue #302 section 5 exactly.
         let p: ProviderKey = serde_json::from_str(
             r#"{
                 "display_name": "deepseek-prod",
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn response_overrides_full_payload_deserialises() {
-        // Mirror the on-disk example in issue #302 §5 exactly.
+        // Mirror the on-disk example in issue #302 section 5 exactly.
         let p: ProviderKey = serde_json::from_str(
             r#"{
                 "display_name": "deepseek-prod",
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn stream_done_marker_deserialises_all_three_variants() {
-        // The on-disk wire form is the lowercased variant — verify
+        // The on-disk wire form is the lowercased variant; verify
         // every literal the cp-api spec promises.
         for (raw, expected) in [
             ("required", StreamDoneMarker::Required),
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn stream_done_marker_rejects_unknown_variant() {
-        // Closed enum — uppercase or unknown variants must fail loudly.
+        // Closed enum: uppercase or unknown variants must fail loudly.
         let r: Result<ResponseOverrides, _> =
             serde_json::from_str(r#"{"stream_done_marker":"Required"}"#);
         assert!(r.is_err());
@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn param_constraints_round_trips() {
-        // Both clamps set → both come back identical after a
+        // Both clamps set; both come back identical after a
         // JSON round-trip. f64 equality holds for finite values.
         let original = ParamConstraints {
             temperature_max: Some(1.0),
@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn strip_headers_trims_whitespace() {
         // Without the normalize hook, "  cookie  " would never match
-        // an inbound `cookie` header → silent credential leak.
+        // an inbound `cookie` header, causing a silent credential leak.
         let pk = pk_with_strip(r#"["  cookie  ", "\tauthorization\n"]"#);
         assert_eq!(pk.strip_headers, vec!["cookie", "authorization"]);
     }

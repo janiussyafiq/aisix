@@ -1,5 +1,5 @@
-# aisix — example configuration
-# Reference: ai-gateway spec §1–§2.
+# aisix - example configuration
+# Reference: ai-gateway spec sections 1-2.
 
 etcd:
   endpoints:
@@ -56,7 +56,7 @@ observability:
       sample_ratio: 1.0
 
 # Managed-mode switch. Uncomment when running as an aisix.cloud
-# tenant: the admin API and Playground will NOT be bound — all
+# tenant: the admin API and Playground will NOT be bound; all
 # configuration flows from etcd via the mTLS channel above, driven
 # by the aisix.cloud control plane.
 # managed:

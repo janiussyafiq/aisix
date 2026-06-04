@@ -1,29 +1,41 @@
 ---
 title: Build a Virtual Model with Failover
-description: Learn how to create a routing model in AISIX AI Gateway that retries a primary OpenAI-compatible upstream and fails over to a secondary upstream.
+description: Create a routing model in AISIX AI Gateway that retries a primary OpenAI-compatible upstream and fails over to a secondary upstream.
 sidebar_position: 81
+toc_max_heading_level: 2
 ---
 
-This tutorial shows you how to create a virtual model that fails over from a primary model to a secondary model. Applications call one model name, while AISIX chooses the upstream model for each request.
+Create a virtual model that fails over from a primary model to a secondary
+model. Applications call one model name while AISIX chooses the upstream model
+for each request.
 
-You will:
+You create a routing model named `chat-prod`. The routing model points to two
+direct models, and each direct model uses its own provider key. After the first
+request succeeds, you point the primary upstream to an unreachable host to
+verify failover.
 
-1. Create two provider keys and two direct models.
-2. Create one virtual model that routes to the direct models.
-3. Create an API key that can call the virtual model.
-4. Break the primary upstream and verify that AISIX fails over to the secondary upstream.
+```mermaid
+flowchart LR
+  Caller["Caller key"] --> Routing["Routing model: chat-prod"]
+  Routing --> Primary["Direct model: gpt-4o-primary"]
+  Routing --> Secondary["Direct model: gpt-4o-secondary"]
+  Primary --> PrimaryKey["Primary provider key"]
+  Secondary --> SecondaryKey["Secondary provider key"]
+```
 
 ## Prerequisites
 
-1. Complete the [Quickstart](../quickstart).
-2. Install [`jq`](https://jqlang.github.io/jq/) to capture resource IDs.
-3. Prepare an OpenAI API key for the secondary upstream.
+Before you start, complete the [Quickstart](../quickstart), install
+[`jq`](https://jqlang.github.io/jq/) to capture resource IDs, and prepare an
+OpenAI API key for the secondary upstream.
 
-For evaluation, you can use the same OpenAI API key for both upstreams. This tutorial breaks failover by changing the primary provider key to an unreachable host.
+You can use the same OpenAI API key for both upstreams. The failover check
+points the primary provider key to an unreachable host so the request must move
+to the secondary target.
 
-## Set variables
+## Set Variables
 
-Export the values used by the tutorial:
+Export the values used in the commands:
 
 ```shell
 export AISIX_ADMIN_KEY="admin-local-only-change-me"
@@ -32,7 +44,8 @@ export SECONDARY_OPENAI_API_KEY="YOUR_SECONDARY_PROVIDER_KEY"
 export CALLER_KEY="sk-failover-demo"
 ```
 
-If you use one OpenAI account for both upstreams, set `PRIMARY_OPENAI_API_KEY` and `SECONDARY_OPENAI_API_KEY` to the same value.
+If you use one OpenAI account for both upstreams, set
+`PRIMARY_OPENAI_API_KEY` and `SECONDARY_OPENAI_API_KEY` to the same value.
 
 Create the SHA-256 hash that AISIX stores for the caller key:
 
@@ -44,7 +57,12 @@ else
 fi
 ```
 
-## Create provider keys
+## Configure the Virtual Model
+
+To build `chat-prod`, create the provider keys, direct models, routing model,
+and caller API key in order.
+
+### Create Provider Keys
 
 Create the primary provider key:
 
@@ -83,7 +101,7 @@ printf 'primary provider key: %s\nsecondary provider key: %s\n' \
   "${PRIMARY_PK_ID}" "${SECONDARY_PK_ID}"
 ```
 
-## Create direct models
+### Create Direct Models
 
 Create the primary model:
 
@@ -113,9 +131,11 @@ SECONDARY_MODEL_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
   }' | jq -r .id)
 ```
 
-## Create a routing model
+### Create a Routing Model
 
-Create a virtual model named `chat-prod`. The proxy starts with `gpt-4o-primary`, retries it once, and then falls over to `gpt-4o-secondary`.
+Create a virtual model named `chat-prod`. The proxy starts with
+`gpt-4o-primary`, retries it once, and then fails over to
+`gpt-4o-secondary`.
 
 ```shell
 CHAT_PROD_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
@@ -135,7 +155,7 @@ CHAT_PROD_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
   }' | jq -r .id)
 ```
 
-## Create an API key
+### Create an API Key
 
 Create an API key that can call the virtual model:
 
@@ -158,9 +178,16 @@ printf 'primary model: %s\nsecondary model: %s\nrouting model: %s\napi key: %s\n
 
 If any value is empty or `null`, check the previous command output for an `error_msg` before continuing.
 
-## Verify the routing model
+## Verify Failover Behavior
 
-Send a request to `chat-prod`. Admin writes propagate asynchronously, so poll until the proxy can serve the virtual model:
+First confirm that the routing model can serve a normal request. Then break the
+primary upstream and confirm that AISIX serves the request from the secondary
+model.
+
+### Verify the Routing Model
+
+Send a request to `chat-prod`. Admin writes propagate asynchronously, so poll
+until the proxy can serve the virtual model:
 
 ```shell
 ROUTING_READY=false
@@ -193,9 +220,9 @@ if [ "${ROUTING_READY}" != "true" ]; then
 fi
 ```
 
-You should see a normal OpenAI-compatible chat-completions response.
+A successful request returns an OpenAI-compatible chat-completions response.
 
-## Trigger failover
+### Trigger Failover
 
 Update the primary provider key to point to an unreachable host:
 
@@ -246,15 +273,17 @@ if [ "${FAILOVER_READY}" != "true" ]; then
 fi
 ```
 
-You should see `HTTP/1.1 200 OK` and the following response header:
+A successful failover response includes `HTTP/1.1 200 OK` and this response
+header:
 
 ```text
 x-aisix-served-by: gpt-4o-secondary
 ```
 
-The request still succeeds because AISIX retries the primary target and then forwards the request to the secondary target.
+The request still succeeds because AISIX retries the primary target and then
+forwards the request to the secondary target.
 
-## Verify runtime status
+### Verify Runtime Status
 
 Check the runtime status of the direct models:
 
@@ -263,9 +292,12 @@ curl -sS http://127.0.0.1:3001/admin/v1/models/status \
   -H "Authorization: Bearer ${AISIX_ADMIN_KEY}"
 ```
 
-You should see `gpt-4o-primary` in `cooldown` and `gpt-4o-secondary` as `healthy`. The routing model `chat-prod` reports `not_applicable` because routing models do not send traffic directly to a provider.
+A successful status response shows `gpt-4o-primary` in `cooldown` and
+`gpt-4o-secondary` as
+`healthy`. The routing model `chat-prod` reports `not_applicable` because
+routing models do not send traffic directly to a provider.
 
-## Delete resources
+## Clean Up
 
 Restore the primary provider key before deleting resources:
 
@@ -299,6 +331,7 @@ curl -sS -X DELETE "http://127.0.0.1:3001/admin/v1/provider_keys/${SECONDARY_PK_
   -H "Authorization: Bearer ${AISIX_ADMIN_KEY}"
 ```
 
-## Next steps
+## Related Reading
 
-You have now learned how to create a virtual model that fails over to another upstream model. See [Routing and failover](../configuration/routing-and-failover.md) to learn more about routing strategies, retries, and runtime filtering.
+For routing strategies, retries, and runtime filtering, see
+[Routing and failover](../configuration/routing-and-failover.md).

@@ -1,4 +1,4 @@
-//! `Model` entity — the routing target users reference from API requests.
+//! `Model` entity - the routing target users reference from API requests.
 //!
 //! A Model has a user-chosen unique `display_name`, an open vendor
 //! string `provider` (e.g. `"openai"`, `"xai"`), an upstream
@@ -6,8 +6,8 @@
 //! a [`ProviderKey`] entry that supplies the secret + optional
 //! `api_base` override.
 //!
-//! Routing models — virtual routers that pick a target Model per request
-//! — set `routing` instead of `provider`/`model_name`/`provider_key_id`.
+//! Routing models, virtual routers that pick a target Model per request,
+//! set `routing` instead of `provider`/`model_name`/`provider_key_id`.
 //! See [`Model::is_routing`].
 //!
 //! etcd path: `{prefix}/models/{uuid}`. Secondary index on `display_name`.
@@ -20,12 +20,12 @@ use crate::resource::Resource;
 
 // `Provider` enum removed as part of #302 Phase A clean cut. Vendor
 // identity is an open string on `ProviderKey.provider` /
-// `Model.provider` — DP no longer enumerates vendors at compile time.
+// `Model.provider`: DP no longer enumerates vendors at compile time.
 // Code paths that need vendor-aware dispatch (rerank, messages
 // cross-provider routing) compare the string directly.
 
 /// Wire-shape adapter used to talk to an upstream. This is the closed
-/// set of upstream protocols the gateway knows how to encode against —
+/// set of upstream protocols the gateway knows how to encode against,
 /// distinct from a vendor identity (which is captured separately on
 /// `ProviderKey.provider` as an open string).
 ///
@@ -33,7 +33,7 @@ use crate::resource::Resource;
 /// a specialized bridge by the open `ProviderKey.provider` string
 /// first, then falls back to the closed `Adapter` family bridge. Any
 /// new long-tail OpenAI-compat vendor cp-api admits (xai, openrouter,
-/// cerebras, …) routes through the `Adapter::Openai` family bridge
+/// cerebras, etc.) routes through the `Adapter::Openai` family bridge
 /// without a DP code change.
 ///
 /// Note on serde casing: `Adapter` uses `kebab-case` so the `AzureOpenai`
@@ -84,7 +84,7 @@ pub struct BackgroundModelCheck {
 /// which upstream failures temporarily exclude this model from routing
 /// candidate selection, and for how long.
 ///
-/// Cooldown is **independent** of request retry semantics — i.e.
+/// Cooldown is **independent** of request retry semantics. That is,
 /// `Routing.retry_on_429` governs whether a 429 is retried within the
 /// current request, but `CooldownConfig.trigger_statuses` governs
 /// whether 429 takes the model out of rotation for subsequent
@@ -115,7 +115,7 @@ pub struct CooldownConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub honor_retry_after: Option<bool>,
     /// Status codes that trigger cooldown. Default:
-    /// `[401, 408, 429, 500, 502, 503, 504]` — auth failures and rate
+    /// `[401, 408, 429, 500, 502, 503, 504]`: auth failures and rate
     /// limits + transient server errors. `400/403/422` etc. are caller
     /// mistakes and intentionally excluded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,7 +153,7 @@ impl CooldownConfig {
         self.honor_retry_after.unwrap_or(true)
     }
 
-    /// Effective trigger-status list — operator override OR built-in
+    /// Effective trigger-status list: operator override OR built-in
     /// default. Returned as `Cow` so callers can avoid copies on the
     /// default path.
     pub fn effective_trigger_statuses(&self) -> std::borrow::Cow<'_, [u16]> {
@@ -190,11 +190,11 @@ pub struct Model {
     /// 1. Anti-misdispatch gates that reject cross-provider routing
     ///    for endpoints whose wire shape is vendor-specific:
     ///    - `/v1/messages` (`crates/aisix-proxy/src/messages.rs:290`)
-    ///      — non-anthropic Models go through `cross_provider_dispatch`.
+    ///      Non-anthropic Models go through `cross_provider_dispatch`.
     ///    - `/v1/responses` (`crates/aisix-proxy/src/responses.rs:117`)
-    ///      — non-openai Models rejected with 400.
+    ///      Non-openai Models rejected with 400.
     ///    - `/v1/images/generations`
-    ///      (`crates/aisix-proxy/src/images.rs:124`) — non-openai
+    ///      (`crates/aisix-proxy/src/images.rs:124`). Non-openai
     ///      Models rejected with 400.
     /// 2. `/v1/rerank` vendor gate + access-log label
     ///    (`crates/aisix-proxy/src/rerank.rs:125,145`); Cohere/Jina
@@ -216,19 +216,19 @@ pub struct Model {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
 
-    /// Upstream model id sent to the provider — the literal string
+    /// Upstream model id sent to the provider: the literal string
     /// the upstream LLM API expects in its `model` field
     /// (e.g. `"gpt-4o"`, `"claude-sonnet-4-5"`,
     /// `"gpt-4o-mini-2024-08-06"`). `None` for routing models.
     ///
-    /// **NOTE — this field name is a known footgun.** Some other proxy
+    /// **NOTE: this field name is a known footgun.** Some other proxy
     /// gateways define a `model_name` field that holds the
     /// *customer-facing alias* (the name a client SDK sends), with a
     /// separate `model` sub-field holding the upstream id. In this
     /// codebase the convention is reversed: `display_name` (above)
     /// is the customer-facing alias, and **`model_name` is the
     /// upstream id**. When reading or writing this struct, do not
-    /// assume the field name alone disambiguates the role — read
+    /// assume the field name alone disambiguates the role. Read
     /// the docs.
     ///
     /// Renaming this field to `upstream_id` to remove the ambiguity
@@ -272,7 +272,7 @@ pub struct Model {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cooldown: Option<CooldownConfig>,
 
-    /// Non-schema runtime id. Not part of the JSON payload — filled in by
+    /// Non-schema runtime id. Not part of the JSON payload; filled in by
     /// the snapshot loader from the etcd key path. Kept here so `Resource`
     /// can return a `&str` id.
     #[serde(skip)]
@@ -470,12 +470,12 @@ mod tests {
     }
 
     // `adapter_from_provider_covers_every_variant` removed alongside
-    // the `From<Provider> for Adapter` impl — both are dead post-#302
+    // the `From<Provider> for Adapter` impl; both are dead post-#302
     // Phase A. ProviderKey.adapter carries the Adapter directly.
 
     #[test]
     fn adapter_serializes_to_kebab_case_wire_strings() {
-        // Pin each Adapter's wire form. AzureOpenai → "azure-openai"
+        // Pin each Adapter's wire form. AzureOpenai maps to "azure-openai"
         // is the load-bearing case for the kebab-case choice; the
         // others are pinned to lock the contract so a future
         // rename_all change is surfaced as a test failure.
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn adapter_rejects_unknown_variant_strings() {
-        // Closed enum — any string outside the kebab-case wire set
+        // Closed enum: any string outside the kebab-case wire set
         // must fail to deserialize so callers can't silently smuggle
         // in a typo or a legacy provider name.
         assert!(serde_json::from_str::<Adapter>("\"gemini\"").is_err());
@@ -535,7 +535,7 @@ mod tests {
         assert!(serde_json::from_str::<Adapter>("\"azure_openai\"").is_err());
     }
 
-    // `every_provider_variant_has_as_str_and_adapter` removed —
+    // `every_provider_variant_has_as_str_and_adapter` removed;
     // the `Provider` enum it pinned no longer exists post-#302
     // Phase A. Vendor identity is now a free-form string on
     // `ProviderKey.provider` / `Model.provider`.

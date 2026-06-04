@@ -1,6 +1,6 @@
 ---
-title: Cloud vs. Self-Hosted
-description: Compare AISIX Cloud managed workflows with standalone self-hosted AISIX AI Gateway operation.
+title: Cloud and Self-Hosted
+description: Review AISIX Cloud managed workflows alongside standalone self-hosted AISIX AI Gateway operation.
 sidebar_position: 78
 ---
 
@@ -9,57 +9,55 @@ managed data plane connected to AISIX Cloud. Both modes use the same
 gateway runtime, but they differ in how resources are managed,
 delivered, and observed.
 
-## Compare the two operating models
+## Operating Model Comparison
 
 | Area | Standalone self-hosted | AISIX Cloud managed data plane |
 | --- | --- | --- |
-| Management surface | Local `/admin/v1/*` API | Cloud control plane |
+| Management API | Local `/admin/v1/*` API | Cloud control plane |
 | Resource scope | Gateway and etcd prefix | Organization and environment |
-| Configuration delivery | Local etcd watch and in-memory snapshot | Cloud projection into the connected data plane |
+| Configuration delivery | Local etcd watch and in-memory configuration state | Cloud projection into the connected data plane |
 | Bootstrap identity | Local bootstrap config and admin keys | Gateway certificate bundle and mTLS to `/dp/*` |
-| Operator responsibility | Gateway runtime, etcd, admin exposure, telemetry, and upgrades | Connected data-plane runtime, networking, and live traffic path |
+| Administrative responsibility | Gateway runtime, etcd, admin exposure, telemetry, and upgrades | Connected data-plane runtime, networking, and live traffic path |
 | Cloud-side workflows | Not available by default | Usage, billing, budget checks, heartbeat, and managed visibility |
 
 In both modes, callers send traffic to the AISIX data plane. What changes is
-where operators manage resources and how those resources reach the data plane.
+where resources are managed and how they reach the data plane.
 
-## Choose self-hosted when
+## Self-Hosted Operation
 
-- you want direct local control of the gateway runtime
-- you want to manage etcd and bootstrap config yourself
-- you want to expose and operate the admin API directly
-- you do not need Cloud-side organization, environment, usage, or billing
-  workflows
+Self-hosted operation fits teams that want direct control over the gateway
+runtime, etcd, bootstrap configuration, admin API exposure, telemetry, and
+upgrade process. It also keeps Cloud organization, environment, usage, and
+billing workflows out of the default operating path.
 
-## Choose AISIX Cloud when
+## AISIX Cloud Operation
 
-- you want environment-scoped resource management
-- you want certificate-based managed data-plane bootstrap
-- you want Cloud-side projection, heartbeat, usage, and budget workflows
-- you want callers to use the gateway while operators manage resources
-  from a centralized control plane
+AISIX Cloud fits teams that want environment-scoped resource management,
+gateway-certificate bootstrap, Cloud-side projection, heartbeat, usage, and
+budget workflows. Callers still send traffic to the gateway; Cloud changes
+how resources are managed and delivered to the data plane.
 
-## Important boundary
+## Operational Differences
 
-Cloud mode is not just self-hosted mode with a different UI. It changes
-the operational model:
+Cloud mode is not self-hosted mode with a different UI. Resources are scoped by
+environment, so a resource must belong to the environment served by the target
+data plane. Resource changes are projected asynchronously, so a saved change
+may not be active on every data-plane instance immediately.
 
-- resources are scoped by environment
-- resource changes are projected asynchronously
-- the data plane authenticates to managed `/dp/*` routes
-- Cloud preview surfaces do not necessarily exercise the full live
-  data-plane path
+The data plane authenticates to managed `/dp/*` routes. Certificate, trust, and
+data-plane-manager connectivity are therefore part of the live path. Cloud
+control-plane checks are useful, but production behavior should still be
+validated through the managed data-plane endpoint.
 
-The practical troubleshooting question also changes. In self-hosted mode,
-start with "did the admin write reach the proxy snapshot?" In Cloud mode,
-start with "is this resource in the correct environment, and has projection
-reached this data plane?"
+Troubleshooting also starts from a different question. In self-hosted mode,
+confirm that the admin write reached the proxy configuration. In Cloud mode,
+confirm that the resource is in the correct environment and that projection
+reached the target data plane.
 
-## Next steps
+## Related Reading
 
-- [Deployment modes](/ai-gateway/overview/deployment-modes) explains the
-  broader deployment model.
-- [AISIX Cloud overview](/ai-gateway/cloud/overview) introduces managed
-  operation.
-- [Self-hosted quickstart](/ai-gateway/quickstart/self-hosted) shows the
-  standalone path.
+For deployment model comparison, see
+[Deployment modes](/ai-gateway/overview/deployment-modes). For managed
+operation, see [AISIX Cloud overview](/ai-gateway/cloud/overview). To run the
+standalone path, see
+[Self-hosted quickstart](/ai-gateway/quickstart/self-hosted).

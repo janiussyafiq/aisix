@@ -1,28 +1,32 @@
 ---
 title: Provider Keys
 description: Configure upstream provider credentials and base URLs for AISIX AI Gateway models.
+toc_max_heading_level: 2
 sidebar_position: 32
 ---
 
-Use provider keys to store upstream credentials and endpoint settings outside
-of caller-facing model aliases.
+Use provider keys to store upstream credentials and endpoint settings separately
+from caller-facing model aliases.
 
 A direct [model](models.md) references a provider key by `provider_key_id`.
-This lets you reuse one upstream credential across multiple models and rotate
-that credential without recreating every alias.
+With this separation, you can reuse one upstream credential across multiple
+models and rotate that credential without recreating every alias.
 
 ## Prerequisites
 
-This page assumes you have:
+Before starting, run a self-hosted gateway with the admin listener available,
+prepare an admin key for `Authorization: Bearer YOUR_ADMIN_KEY`, and collect an
+upstream provider credential or private endpoint credential.
 
-- a running self-hosted gateway with the admin listener available
-- an admin key for `Authorization: Bearer YOUR_ADMIN_KEY`
-- an upstream provider credential or private endpoint credential
-
-Provider keys are operator-managed secrets. Decide who owns the upstream
+Provider keys store sensitive upstream credentials. Decide who owns the upstream
 credential before sharing the key across many models.
 
-## Create a provider key
+## Configure a Provider Key
+
+Create the provider key first, then attach the returned `id` to a model and
+verify that the admin API can read the credential resource.
+
+### Create a Provider Key
 
 ```shell
 curl -sS -X POST http://127.0.0.1:3001/admin/v1/provider_keys \
@@ -48,15 +52,15 @@ Use the returned `id` as the model's `provider_key_id`.
 }
 ```
 
-:::warning Production credentials
+:::warning Production Credentials
 The standalone gateway stores `secret` as plaintext under the etcd `prefix`
 configured in [`config.yaml`](bootstrap-config.md). Anyone with read access to
 that etcd keyspace can read the credential. In production, restrict etcd
 network access, use encryption at rest where available, and keep the
-gateway-to-etcd channel inside the trusted infrastructure boundary.
+gateway-to-etcd channel inside trusted infrastructure.
 :::
 
-## Verify
+### Verify the Provider Key
 
 Confirm the admin API can read the provider key:
 
@@ -65,27 +69,33 @@ curl -sS http://127.0.0.1:3001/admin/v1/provider_keys \
   -H "Authorization: Bearer YOUR_ADMIN_KEY"
 ```
 
-The provider key is not useful by itself on the proxy surface. To verify
+The provider key is not useful by itself on the proxy request path. To verify
 end-to-end traffic, attach it to a [model](models.md), allow that model on a
 caller [API key](api-keys.md), and send a proxy request.
 
-## Understand provider and adapter
+## Understand Provider and Adapter
 
 `provider` and `adapter` are separate fields:
 
-| Field | Purpose | Example values |
+| Field | Purpose | Example Values |
 | --- | --- | --- |
-| `provider` | Identifies the upstream vendor or endpoint. It is an open string. | `openai`, `anthropic`, `deepseek`, `openrouter`, `internal-vllm` |
-| `adapter` | Identifies the upstream wire shape. It is a closed enum because AISIX can only encode implemented protocol families. | `openai`, `anthropic`, `bedrock`, `vertex`, `azure-openai` |
+| `provider` | Identifies the upstream vendor or endpoint. It is an open string. | `openai`, `anthropic`, `deepseek`, `openrouter`, `private-vllm` |
+| `adapter` | Identifies the upstream API format. It is a closed enum because AISIX can only encode implemented protocol families. | `openai`, `anthropic`, `bedrock`, `vertex`, `azure-openai` |
 
-At dispatch time, the gateway tries a provider-specific bridge first. If no
-provider-specific bridge is registered, it falls back to the adapter-family
-bridge. This is why a long-tail OpenAI-compatible provider can use
-`adapter: "openai"` with its own `provider` and `api_base`.
+At request time, the gateway uses provider-specific handling when available;
+otherwise it uses the configured adapter family. This is why a long-tail
+OpenAI-compatible provider can use `adapter: "openai"` with its own `provider`
+and `api_base`.
 
-For the dispatch model, see [Adapter protocol families](../reference/adapters.md).
+For how AISIX selects the request format, see
+[Adapter protocol families](../reference/adapters.md).
 
-## Choose an `api_base`
+## Behavior Details
+
+The fields below control upstream URL construction, passthrough credential
+handling, provider-specific compatibility overrides, and rotation behavior.
+
+### Configure the Base URL
 
 `api_base` controls where the gateway sends upstream requests.
 
@@ -135,7 +145,7 @@ For Gemini's OpenAI-compatible API:
 }
 ```
 
-For Anthropic, the bridge appends `/v1/messages`.
+For Anthropic, AISIX appends `/v1/messages`.
 
 ```json
 {
@@ -145,7 +155,8 @@ For Anthropic, the bridge appends `/v1/messages`.
 }
 ```
 
-For Azure OpenAI, a bare resource name is also accepted. The bridge builds the deployment URL from the selected model name and API version.
+For Azure OpenAI, a bare resource name is also accepted. AISIX builds the
+deployment URL from the selected model name and API version.
 
 ```json
 {
@@ -155,9 +166,13 @@ For Azure OpenAI, a bare resource name is also accepted. The bridge builds the d
 }
 ```
 
-For Bedrock, `api_base` is usually unset. The region comes from the Bedrock credential JSON in `secret`, and the gateway builds the Bedrock Runtime endpoint. Set `api_base` only when routing through a private or custom Bedrock endpoint.
+For Bedrock, `api_base` is usually unset. The region comes from the Bedrock
+credential JSON in `secret`, and the gateway builds the Bedrock Runtime
+endpoint. Set `api_base` only when routing through a private or custom Bedrock
+endpoint.
 
-For Vertex AI, project, region, and token endpoint details come from the service-account JSON in `secret`.
+For Vertex AI, project, region, and token endpoint details come from the
+service-account JSON in `secret`.
 
 ```json
 {
@@ -167,7 +182,7 @@ For Vertex AI, project, region, and token endpoint details come from the service
 }
 ```
 
-## URL normalization
+### Base URL Normalization
 
 The gateway normalizes common `api_base` paste mistakes:
 
@@ -175,16 +190,15 @@ The gateway normalizes common `api_base` paste mistakes:
 - trailing slashes are removed
 - full endpoint URLs such as `/chat/completions`, `/embeddings`, `/v1/messages`,
   and `/audio/transcriptions` are reduced to the expected base URL
-- OpenAI's canonical host can be supplied with or without `/v1`
-- DeepSeek's canonical host tolerates an accidental `/v1`
+- OpenAI's host can be supplied with or without `/v1`
+- DeepSeek's host tolerates an accidental `/v1`
 - Anthropic tolerates bare host, `/v1`, and `/v1/messages`
 
 This tolerance is conservative. For corporate proxies, private gateways, or
-non-canonical paths, the gateway preserves the operator's chosen base after the
-basic trimming and endpoint-suffix cleanup. It does not invent `/v1` for an
-unknown host.
+custom paths, the gateway preserves the configured base after basic trimming
+and endpoint-suffix cleanup. It does not invent `/v1` for an unknown host.
 
-## Passthrough header stripping
+### Passthrough Header Stripping
 
 The passthrough endpoint uses the selected provider key to add the upstream
 credential. To avoid forwarding caller credentials to the upstream provider,
@@ -206,22 +220,22 @@ Only change this field when you have a concrete forwarding requirement and
 accept the credential-leak risk. For endpoint behavior, see
 [Passthrough](../integration/passthrough.md).
 
-## Runtime compatibility overrides
+### Compatibility Overrides
 
 Provider keys can include optional `request` and `response` override blocks for
 provider compatibility. Examples include parameter renames, temperature clamps,
 default outbound headers, default body fields, content-list flattening, stream
 done-marker policy, and reasoning-field extraction.
 
-These blocks are advanced compatibility knobs. The generated schema is the
-contract for the accepted shape, but each provider bridge decides which
-overrides apply to its wire path. Verify bridge behavior before relying on an
+These blocks are advanced compatibility settings. AISIX accepts the
+configuration at write time, but each provider adapter decides which overrides
+apply to its request path. Verify adapter behavior before relying on an
 override for a specific provider family.
 
-For exact fields and source-of-truth guidance, see
+For exact field definitions, see
 [Provider key schema](../reference/provider-key-schema).
 
-## Operational guidance
+### Rotation Behavior
 
 Provider keys are shared dependencies. Rotating one provider key affects every
 model that references it.
@@ -229,30 +243,33 @@ model that references it.
 Duplicate `display_name` values are rejected with `409`.
 
 A model that points at a newly written provider key can fail temporarily until
-the proxy snapshot sees both resources. See
+the proxy has received both resources. See
 [Configuration propagation](configuration-propagation.md).
 
 ## Troubleshooting
 
-### Requests fail after changing `api_base`
+### Requests Fail After Changing the Base URL
 
 Treat this first as an upstream URL construction issue. Confirm the provider
 key's `provider`, `adapter`, and `api_base` match the upstream protocol family.
 
-### Several models fail after provider-key rotation
+### Several Models Fail After Provider-Key Rotation
 
 Check whether they share the same provider key. If they do, the rotated key is
 the common dependency.
 
-### A bring-your-own OpenAI-compatible endpoint fails without `api_base`
+### A Bring-Your-Own Endpoint Fails Without a Base URL
 
-Configure `api_base` explicitly. The OpenAI-family bridge refuses to fall back
+Configure `api_base` explicitly. The OpenAI-family adapter refuses to fall back
 to `api.openai.com` for non-OpenAI provider identities.
 
-## Next steps
+## Related Reading
 
-- [Models](models.md) attaches provider keys to caller-facing aliases.
-- [Bring your own endpoint](byo-endpoint.md) points the `openai` adapter at a private or self-hosted endpoint.
-- [OpenAI-compatible vendor upstream](../integration/upstream-openai-compat.md) onboards public OpenAI-compatible providers.
-- [AWS Bedrock upstream](../integration/upstream-bedrock.md), [Google Vertex AI upstream](../integration/upstream-vertex.md), and [Azure OpenAI upstream](../integration/upstream-azure-openai.md) cover specialized provider families.
-- [Provider key schema](../reference/provider-key-schema) explains the generated schema source of truth.
+To attach provider keys to caller-facing aliases, see [Models](models.md). For
+specific upstream setup paths, see [Bring Your Own Endpoint](byo-endpoint.md),
+[OpenAI-Compatible Vendor Upstream](../integration/upstream-openai-compat.md),
+[AWS Bedrock Upstream](../integration/upstream-bedrock.md),
+[Google Vertex AI Upstream](../integration/upstream-vertex.md), and
+[Azure OpenAI Upstream](../integration/upstream-azure-openai.md). For provider
+key field definitions, see
+[Provider Key Schema](../reference/provider-key-schema).

@@ -1,17 +1,21 @@
 ---
-title: Admin API Source Notes
-description: Understand where the generated AISIX AI Gateway Admin API reference comes from and what it covers.
-sidebar_label: Admin API source notes
+title: Admin API Reference
+description: Open the AISIX AI Gateway Admin API reference and understand its coverage.
+sidebar_label: Admin API Reference
 sidebar_position: 62
 ---
 
-The standalone admin API publishes an OpenAPI 3.1 document from the gateway process.
+The standalone admin API publishes an OpenAPI 3.1 document from the gateway
+process. Use the [Admin API reference](/ai-gateway/reference/admin-api) for
+exact routes, request schemas, response schemas, and status-code details.
 
-Use the generated [Admin API reference](/ai-gateway/reference/admin-api) for the exact route list, request schemas, response schemas, and status-code details. This page explains where that generated reference comes from, how to export it, and which resource boundaries still live outside standalone admin CRUD.
+Open the OpenAPI reference from the hosted documentation or from a self-hosted
+gateway when you need the exact route contract. Some dynamic resources sit
+outside standalone admin CRUD and are noted below.
 
-## Open the generated reference
+## Open the Admin API Reference
 
-The docs site renders the generated OpenAPI document with Redoc:
+Open the Admin API reference at:
 
 ```text
 /ai-gateway/reference/admin-api
@@ -36,32 +40,26 @@ curl -sS http://127.0.0.1:3001/admin/openapi.json \
   -o aisix-admin-openapi.json
 ```
 
-## What the generated reference covers
+## Coverage
 
-The generated document covers the routes mounted by the standalone admin router. This avoids maintaining a second hand-written route inventory in the docs site.
+The OpenAPI document covers the routes mounted by the standalone admin router,
+so the route list, request schemas, and response schemas stay aligned with the
+running gateway.
 
-It includes:
+It includes public admin-listener routes, authenticated admin CRUD routes,
+playground routes, and the resource schemas used by dynamic gateway resources.
 
-- public liveness, metrics, and OpenAPI discovery routes
-- authenticated admin CRUD routes for resources such as provider keys, models, caller API keys, guardrails, cache policies, and observability exporters
-- playground routes mounted on the admin listener
-- request and response schemas merged from generated resource schemas
+For exact route, request, response, and status-code behavior, use the Admin API
+reference.
 
-The generated reference does not describe the proxy API surface. For proxy endpoints such as `/v1/chat/completions`, see [Proxy API reference](proxy-api-reference.md).
+The Admin API reference does not describe the proxy API. For proxy endpoints
+such as `/v1/chat/completions`, see
+[Proxy API reference](proxy-api-reference.md).
 
-## Source of truth
+## Authentication
 
-The admin API specification is generated from the AI Gateway repo and rendered by the docs site. Resource schemas are merged from:
-
-```text
-schemas/resources/
-```
-
-If the generated reference and a prose guide disagree, prefer the generated reference for the exact route, request, response, and status-code contract. Then update the prose guide so operators do not have to reconcile two different descriptions.
-
-## Auth boundary
-
-The public admin-listener routes are liveness, metrics, and OpenAPI discovery. Authenticated admin routes use the configured admin key:
+The public admin-listener routes are liveness, metrics, and OpenAPI discovery.
+Authenticated admin routes use the configured admin key:
 
 ```http
 Authorization: Bearer <admin-key>
@@ -69,24 +67,33 @@ Authorization: Bearer <admin-key>
 
 `x-api-key: <admin-key>` is also accepted on admin auth paths.
 
-This is separate from proxy caller API keys. `POST /playground/chat/completions` expects a proxy API key because it forwards through the proxy router.
+This is separate from proxy caller API keys. `POST /playground/chat/completions`
+expects a proxy API key because it forwards through the proxy router.
 
-## Managed data-plane boundary
+## Managed Data Planes
 
 The standalone admin API is not exposed on AISIX Cloud managed data planes.
 
-In managed mode, use the AISIX Cloud control plane for provider keys, models, caller API keys, and related configuration. The local data plane exposes proxy APIs, not the standalone admin listener.
+In managed mode, use the AISIX Cloud control plane for provider keys, models,
+caller API keys, and related configuration. The local data plane exposes proxy
+APIs, not the standalone admin listener.
 
-## Resources outside standalone admin CRUD
+## Resources Outside Standalone Admin CRUD
 
-Some runtime snapshot resources do not currently have standalone admin CRUD routes.
+Some dynamic resources do not have standalone admin CRUD routes.
 
-`RateLimitPolicy` rows are loaded from etcd directly and can be projected by a control plane. In self-hosted setups where you manage etcd directly, write them under the etcd `rate_limit_policies/<id>` prefix. See [Rate limits](../configuration/rate-limits.md#add-a-policy-limit).
+`RateLimitPolicy` rows can be loaded from etcd or projected by a control
+plane. In self-hosted setups where you manage etcd directly, write them under
+the etcd `rate_limit_policies/<id>` prefix. See
+[Rate limits](../configuration/rate-limits.md#add-a-scoped-policy).
 
-`GuardrailAttachment` rows bind guardrail definitions to `env`, `model`, `api_key`, or `team` scopes and are loaded from `guardrail_attachments/<id>`. See [Guardrails](../configuration/guardrails.md#scope-guardrails).
+`GuardrailAttachment` rows bind guardrail definitions to `env`, `model`,
+`api_key`, or `team` scopes and are loaded from `guardrail_attachments/<id>`.
+See [Guardrails](../configuration/guardrails.md#scope-guardrails).
 
-## Related docs
+## Related Reading
 
-- [Admin API](../configuration/admin-api.md) — operator workflow and examples.
-- [Resource schemas](resource-schemas.md) — resource shape reference.
-- [Headers and error codes](headers-and-error-codes.md) — admin error envelope and status boundaries.
+[Admin API](../configuration/admin-api.md) covers standalone workflows and
+examples. For resource schemas and admin error behavior, see
+[Resource schemas](resource-schemas.md) and
+[Headers and error codes](headers-and-error-codes.md).

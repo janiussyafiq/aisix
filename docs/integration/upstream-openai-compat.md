@@ -1,7 +1,8 @@
 ---
 title: OpenAI-Compatible Vendor Upstream
-description: Onboard a public OpenAI-compatible vendor such as DeepSeek, Groq, Mistral, Together.ai, Fireworks, or Perplexity to AISIX AI Gateway using the openai adapter.
+description: Configure a public OpenAI-compatible vendor such as DeepSeek, Groq, Mistral, Together.ai, Fireworks, or Perplexity in AISIX AI Gateway using the openai adapter.
 sidebar_position: 34
+toc_max_heading_level: 2
 keywords:
   - AISIX AI Gateway
   - OpenAI-compatible API
@@ -11,66 +12,88 @@ keywords:
   - AI gateway
 ---
 
-This guide shows how to onboard a public OpenAI-compatible vendor — DeepSeek, Groq, Mistral, Together.ai, Fireworks, Perplexity, and similar services — to AISIX AI Gateway. These vendors expose the OpenAI chat-completions wire at a known public host, so they all dispatch through the `openai` [adapter](../reference/adapters.md) family. Callers reach them through the same OpenAI-compatible proxy surface and the same caller API keys as any other model.
+AISIX AI Gateway can route OpenAI-compatible chat requests to public model
+vendors such as DeepSeek, Groq, Mistral, Together.ai, Fireworks, and
+Perplexity.
 
-## When to use this
+Applications keep using the gateway's OpenAI-compatible API. AISIX stores the
+vendor credential, sends each request to the configured vendor host, and
+returns the response through the caller-facing model alias.
 
-- Use this when the upstream is a **public** vendor that serves the OpenAI chat-completions API at a documented host (for example `https://api.deepseek.com` or `https://api.groq.com/openai/v1`).
-- Use this in the **self-hosted** gateway, where you register the vendor's host and credential yourself through the admin API.
-- In **AISIX Cloud**, you usually do not need this guide: the control plane fills in the adapter and base URL when you select a catalog provider. See [Where the values come from](#where-the-values-come-from) below.
+## When to Use This Setup
 
-This guide is different from two nearby pages:
+This setup is for public vendors that expose an OpenAI-compatible
+chat-completions API, such as
+`https://api.deepseek.com` or `https://api.groq.com/openai/v1`.
 
-- [Bring your own endpoint](../configuration/byo-endpoint.md) covers **private or self-hosted** OpenAI-compatible servers (vLLM, SGLang, Ollama, an internal proxy). The mechanics are identical; the difference is that a BYO endpoint is yours and not on a public host.
-- [OpenAI-compatible API](openai-compatible-api.md) documents the **client-facing** proxy surface — the API your callers use to reach the gateway. This page is about the **upstream** side: pointing the gateway at a vendor.
+For private or self-hosted OpenAI-compatible servers, use
+[Bring Your Own Endpoint](../configuration/byo-endpoint.md) instead. For the
+client-facing API your applications call, see
+[OpenAI-compatible API](openai-compatible-api.md).
 
-## How it works
+## How AISIX Routes Vendor Requests
 
-An OpenAI-compatible vendor is configured through two resources, exactly like any other upstream:
+An OpenAI-compatible vendor setup connects three gateway resources:
 
-1. A [provider key](../configuration/provider-keys.md) holding the vendor credential (`secret`), its base URL (`api_base`), the vendor identity (`provider`), and the wire shape (`adapter: openai`).
-2. A direct [model](../configuration/models.md) that maps a caller-facing alias (`display_name`) to the vendor's model id (`model_name`) and references the provider key.
+| Resource | Configure | Purpose |
+| --- | --- | --- |
+| Provider key | Vendor credential, `adapter: "openai"`, and `api_base` | Gives AISIX the credential and host for the vendor request. |
+| Model | Caller-facing `display_name` and vendor `model_name` | Maps the model alias used by callers to the model ID expected by the vendor. |
+| Caller API key | `allowed_models` | Allows an application key to call the model alias through AISIX. |
 
-Because these are public vendors with a non-`openai` vendor identity, **you must set `api_base`**. The OpenAI-family bridge only falls back to `https://api.openai.com` when the provider key's vendor identity is `openai` (or empty). For any other vendor it refuses to guess a base URL and fails dispatch. Set `api_base` to the vendor's documented host.
+Set `api_base` for every non-OpenAI public vendor. AISIX only has a built-in
+default for the OpenAI provider itself; it does not guess the base URL for
+DeepSeek, Groq, Mistral, Together.ai, Fireworks, Perplexity, or another vendor.
+Without `api_base`, the gateway cannot know which vendor host should receive
+the request.
 
-Each vendor's canonical `api_base` form differs. Some vendors serve
-OpenAI-compatible paths at the host root; others use a `/v1` or `/openai/v1`
-prefix. AISIX tolerates common paste variants, but it does not invent a
-vendor-specific prefix for you. Use the base URL from the provider's current API
-reference. See [Provider keys](../configuration/provider-keys.md#base-url) for
-base URL guidance and [URL normalization](../configuration/provider-keys.md#url-normalization)
-for the gateway normalization rules.
+Use the base URL from the provider's API reference. Some vendors serve
+OpenAI-compatible paths at the host root, while others include `/v1` or
+`/openai/v1`. See
+[Provider Keys](../configuration/provider-keys.md#configure-the-base-url) for
+base URL guidance and
+[Base URL Normalization](../configuration/provider-keys.md#base-url-normalization)
+for the normalization rules.
+
+After the resources are in place, a request follows this path:
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Client
-    participant Proxy as AISIX proxy (:3000)
-    participant Hub as Bridge hub
-    participant Bridge as OpenAI bridge
+    participant Gateway as AISIX AI Gateway
     participant Vendor as OpenAI-compatible vendor
 
-    Client->>Proxy: POST /v1/chat/completions (model = your-alias)
-    Note over Proxy: resolve alias → Model + ProviderKey
-    Proxy->>Hub: dispatch by adapter (openai)
-    Hub->>Bridge: select OpenAI family bridge
-    Bridge->>Vendor: POST <api_base>/chat/completions (Bearer secret)
-    Vendor-->>Bridge: OpenAI-shaped response
-    Bridge-->>Proxy: normalized chat response
-    Note over Proxy: restore response.model = your-alias
-    Proxy-->>Client: OpenAI-shaped JSON
+    Client->>Gateway: POST /v1/chat/completions (model = alias)
+    Gateway->>Gateway: Authenticate caller and resolve model alias
+    Gateway->>Vendor: POST <api_base>/chat/completions (model = vendor model ID)
+    Vendor-->>Gateway: OpenAI-compatible response
+    Gateway-->>Client: Response with caller-facing model alias
 ```
 
 ## Prerequisites
 
-- A running gateway (admin on `:3001`, proxy on `:3000`). See the [Quickstart](../quickstart).
-- Your admin key from the bootstrap config.
-- A vendor API key and the vendor's documented OpenAI-compatible host. The examples below use DeepSeek (`https://api.deepseek.com`, model id `deepseek-chat`).
+Before you start, run the gateway with the admin API on `:3001` and the proxy
+API on `:3000`. Prepare your admin key from the bootstrap configuration, and
+collect the vendor API key, model ID, and OpenAI-compatible base URL from the
+provider's API reference.
 
-## Create a provider key
+The examples below use DeepSeek with `https://api.deepseek.com` and
+`deepseek-chat`.
 
-:::warning Production credentials
-The standalone gateway stores `secret` as plaintext under the etcd `prefix` from [`config.yaml`](../configuration/bootstrap-config.md). For production, front etcd with encryption-at-rest, restrict etcd network access to the gateway, or use AISIX Cloud's managed [Provider Key Rotation](../cloud/provider-key-rotation.md), where the secret stays in the control plane and only the projected reference reaches the data plane.
+## Configure the Vendor Upstream
+
+Create a provider key, model alias, and caller API key. Together, these
+resources let a caller send the AISIX model alias while the gateway sends the
+vendor model ID and credential upstream.
+
+### Create a Provider Key
+
+:::warning Production Credentials
+The standalone gateway stores `secret` as plaintext under the etcd `prefix`
+from [`config.yaml`](../configuration/bootstrap-config.md). For production,
+protect etcd with encryption at rest and restricted network access, or use
+AISIX Cloud's managed [Provider Key Rotation](../cloud/provider-key-rotation.md).
 :::
 
 ```shell
@@ -86,24 +109,18 @@ curl -sS -X POST http://127.0.0.1:3001/admin/v1/provider_keys \
   }'
 ```
 
-Use a vendor label that is specific enough for dispatch and metrics, such as
-`deepseek`, `groq`, `mistral`, `together`, `fireworks`, or `perplexity`.
+Use a provider label that identifies the vendor, such as `deepseek`, `groq`,
+`mistral`, `together`, `fireworks`, or `perplexity`. Keep `adapter` set to
+`openai`, and set `provider` to the actual vendor identity unless the upstream
+is OpenAI itself.
 
-Set `adapter` to `openai` for OpenAI-compatible vendors. Set `provider` to the
-actual vendor identity, not `openai`, unless the upstream is OpenAI. This keeps
-metrics readable and prevents the bridge from falling back to the public OpenAI
-host if `api_base` is removed.
+Set `api_base` to the provider's OpenAI-compatible base URL. For another
+vendor, replace both `api_base` and `model_name` with values from that
+provider's API reference. Save the returned provider key `id`.
 
-Set `api_base` to the provider's documented OpenAI-compatible base URL. The
-example uses DeepSeek's documented host for `deepseek-chat`; for another vendor,
-replace both `api_base` and `model_name` with values from that provider's API
-reference.
+### Create a Model
 
-Capture the returned `id` for the next step. The admin API returns a `ResourceEntry` with an `id` field; [Understand admin resources](../quickstart/first-model-first-key-first-request.md#inspect-the-resources) shows a `jq`-capturing one-liner if you want to script it.
-
-## Create a model
-
-Map a caller-facing alias to the vendor's model id.
+Map a caller-facing alias to the vendor's model ID.
 
 ```shell
 curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
@@ -117,14 +134,19 @@ curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
   }'
 ```
 
-- `display_name` is the alias callers send in `model` and the value `response.model` echoes back.
-- `model_name` is the vendor's model id — the literal string the vendor expects in its `model` field.
-- `provider` on the model is the same vendor label as on the key.
-- `cost` is optional. Public vendors are not in the gateway's standalone pricing path, so set a `cost` block if you want per-token budget accounting available to AISIX Cloud or your own usage-event consumer. See [Models](../configuration/models.md#cost-metadata).
+`display_name` is the alias callers send in `model` and the value
+`response.model` echoes back. `model_name` is the vendor's model ID, which is
+the literal string the vendor expects in its `model` field. The model `provider`
+uses the same vendor label as the provider key.
 
-## Create a caller API key
+`cost` is optional. Add a `cost` block only when you need budget accounting or
+usage reports to calculate token cost for this alias. See
+[Models](../configuration/models.md#cost-metadata).
 
-The data plane stores `key_hash`, not plaintext. Hash a plaintext caller key, then create the key resource scoped to your new alias.
+### Create a Caller API Key
+
+The gateway stores `key_hash`, not the plaintext caller key. Hash a plaintext
+caller key, then create the key resource scoped to the new alias.
 
 ```shell
 if command -v sha256sum >/dev/null 2>&1; then
@@ -144,9 +166,11 @@ curl -sS -X POST http://127.0.0.1:3001/admin/v1/apikeys \
   }'
 ```
 
-## Send a Request
+## Send a Test Request
 
-Admin writes propagate to the proxy asynchronously. Before sending traffic, poll `/v1/models` until the alias appears for the caller key.
+Admin API writes propagate to the proxy asynchronously. If the alias is not
+visible immediately, check configuration propagation and retry after the proxy
+has loaded the updated model alias.
 
 ```shell
 curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
@@ -160,20 +184,13 @@ curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
   }'
 ```
 
-## Where the values come from
+Self-hosted deployments require the provider-key fields shown above. In AISIX
+Cloud, select the provider in the AISIX Cloud web console. The managed control
+plane sets the adapter and base URL for catalog providers.
 
-The two modes differ only in where the field values come from:
+## Verify the Upstream
 
-- **Self-hosted** — you set `provider`, `adapter: openai`, `api_base`, and `secret` on the provider key yourself, exactly as shown above. The gateway ships no provider catalog.
-- **AISIX Cloud** — the control plane maps each catalog provider to an adapter and base URL. You select the provider in the dashboard; the projected provider key reaches the data plane with `adapter: openai` and the provider's OpenAI-compatible base URL already set. See [Adapter protocol families § Catalog and bring-your-own providers](../reference/adapters.md#catalog-and-bring-your-own-providers).
-
-Catalog presentation affects dashboard discovery only. It does not change data-plane dispatch: an OpenAI-compatible catalog provider and a self-hosted provider key with `adapter: openai` both run through the same OpenAI bridge.
-
-## Verify
-
-A `200` alone does not prove the gateway reached the vendor and applied the alias contract. Verify the two observable facts that do.
-
-### The alias is restored on `response.model`
+After the test request succeeds, confirm that callers see the AISIX model alias:
 
 ```shell
 curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
@@ -183,32 +200,41 @@ curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
   | grep -o '"model":"[^"]*"'
 ```
 
-Expected: `"model":"deepseek-chat-prod"` — your caller-facing alias, **not** the upstream `deepseek-chat`. This proves the request resolved through your model and the gateway restored the alias on the way out. If you see the vendor's model id instead, the request did not flow through the gateway's render path.
+The output should be `"model":"deepseek-chat-prod"`, your caller-facing
+alias, not the upstream `deepseek-chat`. If the vendor's model ID appears
+instead, check that the request is using the AISIX proxy URL and that the caller
+key is allowed to use the `deepseek-chat-prod` alias.
 
-### The request actually reached the vendor
+Check the vendor console, logs, or usage counters for the test request. If
+your vendor exposes request ids or usage records, use them to confirm that the
+request reached the intended account and model.
 
-Confirm dispatch targets your configured `api_base` and not a default host. Temporarily point `api_base` at an unreachable host and confirm the gateway returns an upstream error rather than a `200`:
-
-```shell
-curl -sS -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:3000/v1/chat/completions \
-  -H "Authorization: Bearer sk-demo-caller" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-chat-prod","messages":[{"role":"user","content":"ping"}]}'
-```
-
-With a healthy vendor host, expect `200`. With `api_base` pointing at a dead host, expect a `5xx` upstream error — confirming dispatch uses your `api_base` and not a built-in default. An authentication failure (`401`) instead of a successful response usually means the `secret` is wrong for the vendor.
+If the gateway returns an upstream authentication error, check the provider
+key's `secret`. If it returns an upstream route error, check `api_base` and the
+vendor model ID in `model_name`.
 
 ## Limitations
 
-- This path is for vendors that speak the OpenAI chat-completions wire. A vendor with a non-OpenAI wire shape needs a native adapter — see [Adapter protocol families](../reference/adapters.md).
-- A missing `api_base` on a non-`openai` vendor fails dispatch with a configuration error. Always set `api_base`.
-- Vendor-specific response extensions beyond the OpenAI envelope are not normalized. Reasoning-style fields can be lifted per key via the `response.reasoning_field` override; see [Provider key schema § runtime overrides](../reference/provider-key-schema.md#runtime-overrides).
+This setup is for vendors that accept OpenAI chat-completions requests. A
+vendor with a different request format needs a native adapter. See
+[Adapter Protocol Families](../reference/adapters.md).
 
-## Next steps
+For non-OpenAI vendors, always set `api_base`. A non-`openai` provider key
+without `api_base` cannot reach the vendor because AISIX has no host to call.
 
-- [Choose a provider upstream](provider-upstreams.md) — compare upstream setup paths.
-- [Adapter protocol families](../reference/adapters.md) — why an OpenAI-compatible vendor uses the `openai` adapter.
-- [Bring your own endpoint](../configuration/byo-endpoint.md) — the same mechanics for a private or self-hosted endpoint.
-- [Provider keys](../configuration/provider-keys.md) — the credential resource and the full `api_base` normalization rules.
-- [Provider key schema](../reference/provider-key-schema.md) — the complete field reference.
-- [OpenAI-compatible API](openai-compatible-api.md) — the client-facing proxy surface callers use to reach the vendor.
+Vendor-specific response extensions beyond the OpenAI envelope are not
+normalized by default. Reasoning-style fields can be lifted per key through the
+`response.reasoning_field` override. See
+[Provider Key Schema Runtime Overrides](../reference/provider-key-schema.md#runtime-overrides).
+
+## Related Reading
+
+[Choose a Provider Upstream](provider-upstreams.md) compares upstream setup
+paths, and [Adapter Protocol Families](../reference/adapters.md) explains why
+OpenAI-compatible vendors use the `openai` adapter. Apply the
+same mechanics to private endpoints with
+[Bring Your Own Endpoint](../configuration/byo-endpoint.md). For credential
+fields, base URL behavior, and caller traffic, see
+[Provider Keys](../configuration/provider-keys.md),
+[Provider Key Schema](../reference/provider-key-schema.md), and
+[OpenAI-compatible API](openai-compatible-api.md).

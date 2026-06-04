@@ -19,7 +19,7 @@
           ]
         },
         "patterns": {
-          "description": "Blocklist patterns. Empty list is legal but pointless — the guardrail will allow every request, same as `enabled: false`.",
+          "description": "Blocklist patterns. Empty list is legal but pointless. The guardrail will allow every request, same as `enabled: false`.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/KeywordPattern"
@@ -76,7 +76,7 @@
       }
     },
     {
-      "description": "Azure AI Content Safety Prompt Shield. Detects jailbreak and indirect injection attacks via the `/contentsafety/text:shieldPrompt` API. P1 (PRD-09c §6 P1).",
+      "description": "Azure AI Content Safety Prompt Shield. Detects jailbreak and indirect injection attacks via the `/contentsafety/text:shieldPrompt` API. P1 (PRD-09c section 6 P1).",
       "type": "object",
       "required": [
         "api_key",
@@ -99,7 +99,7 @@
           ]
         },
         "timeout_ms": {
-          "description": "HTTP call timeout in milliseconds. When elapsed the `fail_open` flag governs the verdict. Defaults to 5 000 ms.\n\n**`0` does not mean \"no timeout\".** `Duration::ZERO` causes `tokio::time::timeout` to fire on the first poll, so every call immediately maps to a timeout failure. Use `u32::MAX` (≈ 49 days) for an effectively unlimited timeout.",
+          "description": "HTTP call timeout in milliseconds. When elapsed the `fail_open` flag governs the verdict. Defaults to 5 000 ms.\n\n**`0` does not mean \"no timeout\".** `Duration::ZERO` causes `tokio::time::timeout` to fire on the first poll, so every call immediately maps to a timeout failure. Use `u32::MAX` (about 49 days) for an effectively unlimited timeout.",
           "default": 5000,
           "type": "integer",
           "format": "uint32",
@@ -108,7 +108,7 @@
       }
     },
     {
-      "description": "Azure AI Content Safety Text Moderation. Category-severity + blocklist moderation via the `/contentsafety/text:analyze` API, on input and/or output (including streaming output). P2 (PRD-09c §6 P2, #379).",
+      "description": "Azure AI Content Safety Text Moderation. Category-severity + blocklist moderation via the `/contentsafety/text:analyze` API, on input and/or output (including streaming output). P2 (PRD-09c section 6 P2, #379).",
       "type": "object",
       "required": [
         "api_key",
@@ -244,12 +244,12 @@
       "type": "boolean"
     },
     "enforcement_mode": {
-      "description": "How the DP behaves when this guardrail fires. `\"block\"` (default) — reject the request. `\"monitor\"` — let the request through and record the event (**not yet implemented**; the DP currently always blocks regardless of this field — do not set `\"monitor\"` expecting pass-through behavior until a future release wires it into the chain).",
+      "description": "How the DP behaves when this guardrail fires. `\"block\"` (default): reject the request. `\"monitor\"`: let the request through and record the event (**not yet implemented**; the DP currently always blocks regardless of this field. Do not set `\"monitor\"` expecting pass-through behavior until a future release wires it into the chain).",
       "default": "block",
       "type": "string"
     },
     "fail_open": {
-      "description": "Behavior when a remote-API guardrail (today `kind=bedrock`) can't reach its upstream. `true` lets the request through (recorded in usage_events.guardrail_bypassed_reason); `false` blocks with 422. No-op for `kind=keyword`. Defaults `true` (matches the PG schema default + PRD-09c §6.4).",
+      "description": "Behavior when a remote-API guardrail (today `kind=bedrock`) can't reach its upstream. `true` lets the request through (recorded in usage_events.guardrail_bypassed_reason); `false` blocks with 422. No-op for `kind=keyword`. Defaults `true` (matches the PG schema default + PRD-09c section 6.4).",
       "default": true,
       "type": "boolean"
     },
@@ -263,7 +263,7 @@
       ]
     },
     "mandatory": {
-      "description": "When `true`, a runtime error in this guardrail's evaluation (e.g. a Bedrock timeout) is treated as fatal: the request is blocked regardless of `fail_open`. When `false` (default), `fail_open` governs the error path.\n\n**Not yet implemented** — the field is stored and forwarded to the CP dashboard but the DP does not yet consult it; `fail_open` alone governs error behavior in the current release.",
+      "description": "When `true`, a runtime error in this guardrail's evaluation (e.g. a Bedrock timeout) is treated as fatal: the request is blocked regardless of `fail_open`. When `false` (default), `fail_open` governs the error path.\n\n**Not yet implemented**. The field is stored and forwarded to the CP dashboard but the DP does not yet consult it; `fail_open` alone governs error behavior in the current release.",
       "default": false,
       "type": "boolean"
     },
@@ -274,7 +274,7 @@
   },
   "definitions": {
     "BedrockAWSCredentials": {
-      "description": "AWS credentials for `kind: \"bedrock\"`. Phase 2 supports `static` (access-key pair); Phase 4 adds `role_arn` (sts:AssumeRole) under the same tag.\n\nWire shape on the kine path is plaintext: cp-api decrypts the envelope-encrypted secret at projection time (same trust boundary as `provider_keys` — see PRD-09c §6.3). The DP only ever holds plaintext in memory; it does not need a master key.",
+      "description": "AWS credentials for `kind: \"bedrock\"`. Phase 2 supports `static` (access-key pair); Phase 4 adds `role_arn` (sts:AssumeRole) under the same tag.\n\nWire shape on the kine path is plaintext: cp-api decrypts the envelope-encrypted secret at projection time (same trust boundary as `provider_keys`; see PRD-09c section 6.3). The DP only ever holds plaintext in memory; it does not need a master key.",
       "oneOf": [
         {
           "type": "object",
@@ -302,7 +302,7 @@
       ]
     },
     "BedrockLatencyMode": {
-      "description": "Per-guardrail latency policy for `kind: \"bedrock\"`. `serial` waits unconditionally; `timed` aborts at `timeout_ms` and applies the row-level `fail_open` flag. Range matches cp-api's validator (100..5000ms) — see PRD-09c §6.6.",
+      "description": "Per-guardrail latency policy for `kind: \"bedrock\"`. `serial` waits unconditionally; `timed` aborts at `timeout_ms` and applies the row-level `fail_open` flag. Range matches cp-api's validator (100..5000ms); see PRD-09c section 6.6.",
       "oneOf": [
         {
           "type": "object",

@@ -1,7 +1,8 @@
 ---
 title: Google Vertex AI Upstream
-description: Route AISIX AI Gateway to Google Vertex AI with a service-account credential, including in-process OAuth token minting, publisher dispatch, and an end-to-end chat example.
+description: Route AISIX AI Gateway to Google Vertex AI with a service-account credential and Vertex model aliases.
 sidebar_position: 32
+toc_max_heading_level: 2
 keywords:
   - AISIX AI Gateway
   - Google Vertex AI
@@ -10,104 +11,116 @@ keywords:
   - AI gateway
 ---
 
-AISIX AI Gateway can route requests to [Google Vertex AI](https://cloud.google.com/vertex-ai/generative-ai/docs) so callers reach Vertex-hosted Gemini and partner models through the gateway's OpenAI-compatible proxy. This page shows how to register a GCP credential, how the gateway mints OAuth2 tokens, how publisher dispatch works, and how to verify a request reached Vertex with Bearer auth.
+AISIX AI Gateway can route OpenAI-compatible chat requests to [Google Vertex AI](https://cloud.google.com/vertex-ai/generative-ai/docs).
+Callers can reach Vertex-hosted Gemini and partner models through the gateway.
 
-Vertex uses the `vertex` adapter family. The gateway resolves the Vertex publisher from the model id, authenticates with a GCP OAuth2 Bearer token, dispatches to the publisher-specific Vertex route, and renders the response back to the caller as an OpenAI chat-completions envelope.
+Register GCP credentials, map a caller-facing alias to a Vertex model ID, and
+send requests through the gateway's proxy API. The provider key uses
+`adapter: vertex`, and AISIX authenticates to Vertex with a GCP OAuth2 bearer
+token.
 
-## When to use this
+## Use Cases
 
-- Use this when your models run on Google Vertex AI and you want them behind the gateway's auth, allowlist, rate limiting, and usage accounting.
-- Use this when you want the gateway to mint and cache GCP access tokens from a service-account key, rather than managing token refresh yourself.
-- For models you host yourself, see [Bring your own endpoint](../configuration/byo-endpoint.md) instead.
+This setup is for models that run on Google Vertex AI and need gateway
+authentication, model allowlists, rate limiting, and usage accounting. The Vertex
+adapter can mint and cache GCP access tokens from a service-account key, so
+callers do not manage token refresh.
 
-## How it works
+For models you host yourself, use [Bring Your Own Endpoint](../configuration/byo-endpoint.md)
+instead.
 
-The gateway resolves the Vertex publisher from the model id and chooses the
-matching Vertex route.
+## Vertex Request Routing
+
+AISIX chooses the Vertex route from the configured `model_name`.
 
 Gemini models such as `gemini-*` use the Google publisher route,
 `publishers/google/models/<model>:generateContent`, or
 `:streamGenerateContent?alt=sse` for streaming.
 
 Anthropic models such as `claude-*` use the Anthropic publisher raw-predict
-route and carry an Anthropic Messages body with
-`anthropic_version: "vertex-2023-10-16"`.
+route with an Anthropic Messages body and `anthropic_version:
+"vertex-2023-10-16"`.
 
-OpenAI-compatible MaaS models, including `meta/*`, `llama*`, `deepseek*`,
-`qwen*`, `openai/gpt-oss*`, `minimaxai/*`, `moonshotai/*`, and `zai-org/*`, use
-the Vertex `endpoints/openapi/chat/completions` route with the model id in the
-body.
+OpenAI-compatible Model Garden partner models, including `meta/*`, `llama*`,
+`deepseek*`, `qwen*`, `openai/gpt-oss*`, `minimaxai/*`, `moonshotai/*`, and
+`zai-org/*`, use the Vertex `endpoints/openapi/chat/completions` route with the
+model ID in the body.
 
 Mistral models such as `mistral-*` and `codestral-*` use the Mistral publisher
-raw-predict route. AI21 models such as `jamba-*` use the AI21 publisher
-raw-predict route. In both cases, AISIX sends an OpenAI-compatible body and keeps
-the model id in both the URL and body.
+raw-predict route with an OpenAI-compatible body. AI21 models such as `jamba-*`
+use the AI21 publisher raw-predict route with an OpenAI-compatible body.
 
-For every supported publisher, the gateway:
-
-1. Reads the GCP credential from the provider key's `secret`.
-2. Obtains an OAuth2 access token — either the pre-minted `access_token` you supplied, or one minted in-process from a `service_account_json` (see [Token minting](#token-minting)).
-3. POSTs the publisher-specific Vertex request with `Authorization: Bearer <token>`.
+For every supported publisher, AISIX reads the GCP credential from the provider
+key's `secret`, obtains an OAuth2 access token, and sends the Vertex request
+with `Authorization: Bearer <token>`.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Client
-    participant Proxy as AISIX proxy (:3000)
-    participant Bridge as Vertex bridge
+    participant Gateway as AISIX AI Gateway
     participant Google as Google OAuth2
-    participant Vertex as Vertex AI (Gemini)
+    participant Vertex as Vertex AI
 
-    Client->>Proxy: POST /v1/chat/completions (model = your-alias)
-    Note over Proxy: resolve alias → Model + ProviderKey (adapter=vertex)
-    Proxy->>Bridge: dispatch
+    Client->>Gateway: POST /v1/chat/completions (model = alias)
+    Gateway->>Gateway: Authenticate caller and resolve model alias
     alt service_account_json
-        Bridge->>Google: signed JWT → access token (cached)
-        Google-->>Bridge: access_token
+        Gateway->>Google: signed JWT -> access token (cached)
+        Google-->>Gateway: access_token
     else pre-minted access_token
-        Note over Bridge: use token verbatim
+        Note over Gateway: Use the supplied token
     end
-    Bridge->>Vertex: POST publisher-specific Vertex route (Bearer token)
-    Vertex-->>Bridge: Gemini response
-    Bridge-->>Proxy: normalized chat response
-    Note over Proxy: restore response.model = your-alias
-    Proxy-->>Client: OpenAI-shaped JSON
+    Gateway->>Vertex: POST publisher-specific Vertex route (Bearer token)
+    Vertex-->>Gateway: Vertex response
+    Gateway-->>Client: OpenAI-compatible response with caller-facing alias
 ```
 
-## Token minting
+## Credential Modes
 
-The provider key's `secret` is a JSON object carrying `project`, `region`, and **exactly one** of two credential modes:
+The provider key's `secret` is a JSON object carrying `project`, `region`, and
+exactly one credential mode. Use `service_account_json` for the full GCP
+service-account JSON key. Use `access_token` only when you already manage and
+refresh a pre-minted GCP OAuth2 bearer token.
 
-- **`service_account_json`** (recommended) — the full GCP service-account JSON key, as emitted by `gcloud iam service-accounts keys create`. The gateway signs a JWT with the service account's RSA private key (RS256), exchanges it for an OAuth2 access token at the service account's `token_uri` (the standard [JWT-bearer assertion grant](https://developers.google.com/identity/protocols/oauth2/service-account)), and caches the token in-process. The cached token is refreshed about 60 seconds before its reported expiry, so an in-flight request never lands on an expired token.
-- **`access_token`** — a pre-minted GCP OAuth2 bearer token you manage and refresh yourself (GCP token TTL is roughly one hour). Useful for short-lived test rigs or when you already operate a token-mint pipeline.
+With `service_account_json`, AISIX signs a JWT with the service account's RSA
+private key and exchanges it for an OAuth2 access token at the service account's
+`token_uri`. The gateway caches the token for reuse and refreshes it about 60
+seconds before its reported expiry.
 
-Setting both, or neither, fails at registration time with a clear error.
+With `access_token`, the gateway uses the provided bearer token directly. GCP
+token TTL is roughly one hour, so this mode is best suited to short-lived test
+environments or an existing token-minting pipeline.
+
+AISIX rejects a provider key that sets both credential modes or neither mode.
 
 ## Prerequisites
 
-- A running gateway (admin on `:3001`, proxy on `:3000`). See the [Quickstart](../quickstart).
-- Your admin key from the bootstrap config.
-- A GCP project with the Vertex AI API enabled, a region (for example `us-central1`), and a service-account key with the Vertex AI user role.
+Before you start, run the gateway with the admin API on `:3001` and the proxy
+API on `:3000`, prepare your admin key from the bootstrap config, and enable
+the Vertex AI API in the target GCP project. You also need a region, such as
+`us-central1`, and a service-account key with the Vertex AI user role.
 
-## Values to collect
+Prepare the GCP project ID, Vertex region, service-account JSON key or
+pre-minted access token, Vertex publisher model ID, caller-facing alias, and
+optional proxy or private endpoint host.
 
-Before creating AISIX resources, collect these upstream values:
+## Configure the Vertex Upstream
 
-| Value | Where it is used |
-| --- | --- |
-| GCP project id | `secret.project` on the provider key |
-| Vertex region | `secret.region`; also determines the standard Vertex AI host |
-| Service-account JSON key or pre-minted access token | `secret.service_account_json` or `secret.access_token` |
-| Vertex publisher model id | `model_name` on the model resource |
-| Caller-facing alias | `display_name` on the model resource and `allowed_models` on the caller API key |
-| Optional proxy or private endpoint host | `api_base` on the provider key |
+Create a Vertex provider key, model alias, and caller API key. The provider key
+stores the GCP project, region, and credential mode; the model selects the
+Vertex publisher model ID.
 
-## Create a Vertex provider key
+### Create a Vertex Provider Key
 
-The `secret` is a JSON string. The example below uses the `service_account_json` mode. Embed the service-account JSON as a nested object inside the secret.
+The `secret` is a JSON string. The example below uses the
+`service_account_json` mode. Embed the service-account JSON as a nested object
+inside the secret.
 
-:::warning Production credentials
-The standalone gateway stores `secret` as plaintext under the etcd `prefix` from [`config.yaml`](../configuration/bootstrap-config.md). For production, front etcd with encryption-at-rest, restrict etcd network access to the gateway, or use AISIX Cloud's managed [Provider Key Rotation](../cloud/provider-key-rotation.md), where the secret stays in the control plane and only the projected reference reaches the data plane.
+:::warning Production Credentials
+The standalone gateway stores `secret` as plaintext under the etcd `prefix`
+from [`config.yaml`](../configuration/bootstrap-config.md). For production,
+protect etcd with encryption at rest and restricted network access, or use
+AISIX Cloud's managed [Provider Key Rotation](../cloud/provider-key-rotation.md).
 :::
 
 ```shell
@@ -126,21 +139,22 @@ The `secret` must include the GCP project id and Vertex region. The region
 drives the `<region>-aiplatform.googleapis.com` host unless you override
 `api_base`.
 
-For credentials, include exactly one mode:
+For credentials, include exactly one mode: `service_account_json` for OAuth
+token minting, or `access_token` for a pre-minted token you refresh yourself.
 
-- `service_account_json`, the full GCP service-account JSON key. AISIX mints and
-  refreshes OAuth tokens in-process.
-- `access_token`, a pre-minted GCP OAuth2 token that you refresh yourself.
+Set `adapter` to `vertex`. Use a provider label that identifies the upstream;
+the example uses `google-vertex`.
 
-`adapter` must be `vertex`. `provider` is a free-form vendor label (`google-vertex` matches the AISIX Cloud catalog id).
+If you route Vertex traffic through a corporate proxy, set `api_base` on the
+provider key to the proxy host. AISIX appends the publisher-specific
+`/v1/projects/...` path.
 
-If you operate behind a corporate proxy, set `api_base` on the provider key to your proxy host; it overrides the regional `<region>-aiplatform.googleapis.com` host. The bridge appends the publisher-specific `/v1/projects/...` path itself.
+Save the returned `id` for the model resource.
 
-Capture the returned `id` for the next step.
+### Create a Model
 
-## Create a model
-
-`model_name` is the Vertex publisher model id. The customer-facing alias is `display_name`.
+`model_name` is the Vertex publisher model ID. The caller-facing alias is
+`display_name`.
 
 ```shell
 curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
@@ -155,10 +169,10 @@ curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
 ```
 
 Other supported examples include `claude-sonnet-4-5` for Anthropic on Vertex,
-`meta/llama-3.3-70b-instruct-maas` for OpenAI-compatible MaaS, `mistral-large-2411`
-for Mistral, and `jamba-1.5-large` for AI21.
+`meta/llama-3.3-70b-instruct-maas` for OpenAI-compatible partner models,
+`mistral-large-2411` for Mistral, and `jamba-1.5-large` for AI21.
 
-## Create a caller API key
+### Create a Caller API Key
 
 ```shell
 if command -v sha256sum >/dev/null 2>&1; then
@@ -178,9 +192,13 @@ curl -sS -X POST http://127.0.0.1:3001/admin/v1/apikeys \
   }'
 ```
 
-## Send a Request
+## Send a Test Request
 
-Admin writes propagate to the proxy asynchronously. Before sending traffic, poll `/v1/models` until the alias appears for the caller key. The example below uses Gemini. Gemini requires at least one user or assistant turn; a system-only request is rejected before dispatch.
+Admin API writes propagate to the proxy asynchronously. If the alias is not
+visible immediately, check configuration propagation and retry after the proxy
+has loaded the model alias. The example below uses
+Gemini. Gemini requires at least one user or assistant turn; a system-only
+request is rejected before the provider request.
 
 ```shell
 curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
@@ -194,7 +212,7 @@ curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
   }'
 ```
 
-Expected response (OpenAI-shaped, alias restored):
+The gateway returns an OpenAI-compatible response with the caller-facing alias:
 
 ```json
 {
@@ -211,11 +229,10 @@ Expected response (OpenAI-shaped, alias restored):
 }
 ```
 
-## Verify
+## Verify the Vertex Upstream
 
-Confirm the two observable facts a `200` does not, by itself, prove.
-
-### `response.model` is the alias, not the Gemini id
+After the test request succeeds, confirm the caller-facing alias and Vertex
+request.
 
 ```shell
 curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
@@ -225,37 +242,40 @@ curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
   | grep -o '"model":"[^"]*"'
 ```
 
-Expected: `"model":"gemini-prod"` — your alias, not `gemini-1.5-pro`. This is the gateway-wide alias-restore contract.
+The output should be `"model":"gemini-prod"`, your caller-facing alias, not
+`gemini-1.5-pro`.
 
-### The outbound request uses the expected Vertex route
+AISIX sends `Authorization: Bearer <token>` and calls the route family
+selected from `model_name`: Gemini uses the Google publisher
+`:generateContent` route, Anthropic on Vertex uses the Anthropic
+`:rawPredict` route, OpenAI-compatible partner models use
+`endpoints/openapi/chat/completions`, and Mistral or AI21 models use their
+publisher `:rawPredict` routes.
 
-The gateway sends `Authorization: Bearer <token>` and calls the route family selected from `model_name`:
-
-- Gemini: `/v1/projects/<project>/locations/<region>/publishers/google/models/<model>:generateContent`
-- Anthropic on Vertex: `/v1/projects/<project>/locations/<region>/publishers/anthropic/models/<model>:rawPredict`
-- Llama and other OpenAI-compatible MaaS models: `/v1/projects/<project>/locations/<region>/endpoints/openapi/chat/completions`
-- Mistral and AI21: `/v1/projects/<project>/locations/<region>/publishers/<publisher>/models/<model>:rawPredict`
-
-Confirm the auth and token-mint path indirectly:
-
-```shell
-curl -sS -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:3000/v1/chat/completions \
-  -H "Authorization: Bearer sk-demo-caller" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gemini-prod","messages":[{"role":"user","content":"ping"}]}'
-```
-
-With a valid service-account key, expect `200`. With an invalid private key or revoked service account, expect a configuration or upstream error — confirming the gateway minted (or attempted to mint) a token and dispatched to Vertex. Upstream Vertex error envelopes (which can contain your GCP project id) are redacted to a canned, status-keyed message before reaching the caller.
+Check Vertex logs, metrics, quota usage, or provider-side request records for
+the test request. If AISIX returns a token-minting or upstream authentication
+error, check the service-account key, region, Vertex API enablement, IAM role,
+and model access.
 
 ## Limitations
 
-- Publisher selection is prefix-based. If `model_name` does not match a supported prefix, the gateway rejects the request before dispatch with a publisher-unknown configuration error.
-- This page uses Gemini for the end-to-end example because it is the most common Vertex path. For partner models, validate the exact `model_name`, quota, and regional availability in your Vertex project before exposing the alias to callers.
-- Provider-key request and response overrides can apply on Vertex routes, but they are most directly useful on the OpenAI-compatible rails. Gemini's native `contents` shape does not match every OpenAI-style override target.
+Publisher selection is prefix-based. If `model_name` does not match a
+supported prefix, the gateway rejects the request before the provider request
+with an unsupported-publisher configuration error.
 
-## Next steps
+The end-to-end example uses Gemini because it is the most common Vertex path.
+For partner models, validate the exact `model_name`, quota, and regional
+availability in your Vertex project before exposing the alias to callers.
 
-- [Choose a provider upstream](provider-upstreams.md) — compare upstream setup paths.
-- [Adapter protocol families](../reference/adapters.md) — where Vertex fits among the five adapters.
-- [Provider keys](../configuration/provider-keys.md) — the credential resource and `api_base` behavior.
-- [AWS Bedrock upstream](upstream-bedrock.md) and [Azure OpenAI upstream](upstream-azure-openai.md) — the other specialized-family guides.
+Provider-key request and response overrides can apply on Vertex routes, but
+they are most directly useful on OpenAI-compatible routes. Gemini's native
+`contents` format does not match every OpenAI-style override target.
+
+## Related Reading
+
+[Choose a Provider Upstream](provider-upstreams.md) compares setup paths, and
+[Adapter Protocol Families](../reference/adapters.md) shows where Vertex fits
+among adapter families. Configure credentials and `api_base` behavior with
+[Provider Keys](../configuration/provider-keys.md). For other upstream
+families, see [AWS Bedrock Upstream](upstream-bedrock.md) and
+[Azure OpenAI Upstream](upstream-azure-openai.md).

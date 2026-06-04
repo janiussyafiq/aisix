@@ -1,4 +1,4 @@
-# aisix — managed-mode bootstrap config (aisix.cloud tenant).
+# aisix - managed-mode bootstrap config (aisix.cloud tenant).
 #
 # Used by the official Docker image as `/etc/aisix/config.yaml`.
 # Only the bare minimum is set here:
@@ -19,14 +19,14 @@
 #   AISIX_MANAGED__CP_CA_PEM=...
 #
 # Plus optionally `AISIX_PROXY__ADDR`, `AISIX_OBSERVABILITY__LOG_LEVEL`,
-# `AISIX_CACHE__BACKEND`, etc. — every config field is reachable via
+# `AISIX_CACHE__BACKEND`, etc. Every config field is reachable via
 # `AISIX_<UPPER>__<UPPER>` (see crates/aisix-core/src/config.rs).
 #
 # Subsequent boots re-use the mTLS bundle written under
 # `managed.mtls_dir`.
 
 etcd:
-  # Placeholder — overwritten at boot before opening the gRPC channel.
+  # Placeholder, overwritten at boot before opening the gRPC channel.
   endpoints:
     - "https://placeholder-overridden-at-register:2379"
   prefix: "/aisix"
@@ -62,14 +62,14 @@ observability:
 
 managed:
   enabled: true
-  # CP URL, etcd endpoint, and cert bundle come from env vars — never
+  # CP URL, etcd endpoint, and cert bundle come from env vars; never
   # bake secrets into the image.
   mtls_dir: "/var/lib/aisix/mtls"
   dp_id_file: "/var/lib/aisix/dp_id"
-  # On-disk snapshot cache (prd-09 §9.7.2). The supervisor writes the
+  # On-disk snapshot cache (prd-09 section 9.7.2). The supervisor writes the
   # last-known etcd contents here on every successful resync / put /
   # delete, and re-loads it at boot before opening the etcd connection
-  # — so the proxy stays up across CP outages and full restarts.
+  # so the proxy stays up across CP outages and full restarts.
   # Set to "" to disable.
   snapshot_cache_path: "/var/lib/aisix/config_cache.json"
 

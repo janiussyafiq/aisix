@@ -1,47 +1,56 @@
 ---
 title: Anthropic SDK Quickstart
-description: Configure an Anthropic-compatible client to call AISIX AI Gateway through the /v1/messages proxy surface.
+description: Configure an Anthropic-compatible client to call AISIX AI Gateway through the /v1/messages proxy API.
 sidebar_position: 13
 toc_max_heading_level: 2
 ---
 
-This quickstart shows how to point an Anthropic-style SDK client at AISIX AI Gateway.
+Point an Anthropic-style SDK client at AISIX AI Gateway.
 
-This guide shows how to call AISIX from the Anthropic SDK when your application already uses Claude-style request and response shapes. If your application is already built around OpenAI SDKs, use [OpenAI SDK quickstart](openai-sdk.md) instead.
+Call AISIX from the Anthropic SDK when your application already uses
+Claude-style request and response formats. The setup adds an Anthropic-backed
+model alias to the local gateway, allows the quickstart caller key to use it,
+and calls `POST /v1/messages` through the Anthropic Python SDK.
 
-By the end of this guide, you will have:
-
-1. Added an Anthropic-backed model alias to the local gateway.
-2. Allowed the quickstart caller key to use that alias.
-3. Called `POST /v1/messages` through the Anthropic Python SDK.
+If your application is already built around OpenAI SDKs, use
+[OpenAI SDK Quickstart](openai-sdk.md) instead.
 
 ## Prerequisites
 
-- A running gateway from the [Quickstart](../quickstart).
-- The quickstart admin key and caller key. This guide uses `admin-local-only-change-me` and `sk-demo-caller`.
-- An Anthropic API key.
-- Python 3.8 or later.
-- `curl` and `jq`, used to create and verify the example alias.
+Before you start, run the gateway from the [Quickstart](../quickstart) and
+prepare the quickstart admin key and caller key. The examples use
+`admin-local-only-change-me` and `sk-demo-caller`. You also need an Anthropic
+API key, Python 3.8 or later, and `curl` plus `jq` for creating and verifying
+the example alias.
 
-The main quickstart creates an OpenAI-backed alias named `gpt-4o-prod`. This page adds a second alias, `claude-prod`, backed by Anthropic.
+The main quickstart creates an OpenAI-backed alias named `gpt-4o-prod`. This
+quickstart adds a second alias, `claude-prod`, backed by Anthropic.
 
-## Request path
+## What Changes in Your Application
 
-The Anthropic SDK will call the gateway, not Anthropic directly:
+Keep the Anthropic SDK client, but send requests through the gateway instead of
+calling Anthropic directly:
 
-```text
-Anthropic SDK -> AISIX /v1/messages -> claude-prod -> Anthropic provider key -> upstream model
+```mermaid
+flowchart LR
+    SDK["Anthropic SDK"] --> Proxy["AISIX /v1/messages"]
+    Proxy --> Alias["claude-prod"]
+    Alias --> ProviderKey["Anthropic provider key"]
+    ProviderKey --> Upstream["Upstream model"]
 ```
 
-The application sends:
+The application sends the AISIX caller key `sk-demo-caller`, the AISIX model
+alias `claude-prod`, and the gateway base URL `http://127.0.0.1:3000`.
 
-- AISIX caller key: `sk-demo-caller`
-- AISIX model alias: `claude-prod`
-- Gateway base URL: `http://127.0.0.1:3000`
+AISIX resolves `claude-prod` to the upstream Anthropic model and injects the
+stored provider credential on the upstream side.
 
-AISIX resolves `claude-prod` to the upstream Anthropic model and injects the stored provider credential on the upstream side.
+## Configure the Gateway
 
-## Step 1: Set Anthropic setup variables
+Create an Anthropic provider key, add a `claude-prod` model alias, and allow
+the quickstart caller key to use that alias.
+
+### Set Environment Variables
 
 Export the values used by the admin commands:
 
@@ -55,11 +64,14 @@ export AISIX_ANTHROPIC_ALIAS="claude-prod"
 
 Replace `YOUR_ANTHROPIC_API_KEY` with a real Anthropic API key.
 
-`ANTHROPIC_MODEL` is the upstream model ID AISIX sends to Anthropic. `AISIX_ANTHROPIC_ALIAS` is the caller-facing model name your application sends to AISIX.
+`ANTHROPIC_MODEL` is the upstream model ID AISIX sends to Anthropic.
+`AISIX_ANTHROPIC_ALIAS` is the caller-facing model name your application sends
+to AISIX.
 
-## Step 2: Find the quickstart API key resource
+### Find the API Key Resource
 
-If you are reusing the quickstart caller key, recover the matching API key resource from the admin API:
+If you are reusing the quickstart caller key, recover the matching API key
+resource from the admin API:
 
 ```shell
 if command -v sha256sum >/dev/null 2>&1; then
@@ -80,7 +92,7 @@ if [ -z "${APIKEY_ID}" ]; then
 fi
 ```
 
-## Step 3: Create an Anthropic provider key
+### Create an Anthropic Provider Key
 
 Create a provider key that stores the upstream Anthropic credential:
 
@@ -97,9 +109,10 @@ ANTHROPIC_PROVIDER_KEY_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/prov
   }' | jq -r .id)
 ```
 
-The Anthropic bridge appends `/v1/messages` to `api_base`, so use the bare host `https://api.anthropic.com`.
+AISIX appends `/v1/messages` to `api_base`, so use the bare host
+`https://api.anthropic.com`.
 
-## Step 4: Create an Anthropic-backed model alias
+### Create an Anthropic-Backed Model Alias
 
 Create the caller-facing model alias:
 
@@ -115,11 +128,13 @@ ANTHROPIC_MODEL_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/models \
   }' | jq -r .id)
 ```
 
-The caller sends `claude-prod` to AISIX. The upstream provider receives `claude-sonnet-4-6`.
+The caller sends `claude-prod` to AISIX. The upstream provider receives
+`claude-sonnet-4-6`.
 
-## Step 5: Allow the caller key to use the alias
+### Allow the Caller Key to Use the Alias
 
-Update the quickstart API key so the same caller key can access both `gpt-4o-prod` and `claude-prod`:
+Update the quickstart API key so the same caller key can access both
+`gpt-4o-prod` and `claude-prod`:
 
 ```shell
 curl -sS -X PUT http://127.0.0.1:3001/admin/v1/apikeys/${APIKEY_ID} \
@@ -131,7 +146,7 @@ curl -sS -X PUT http://127.0.0.1:3001/admin/v1/apikeys/${APIKEY_ID} \
   }'
 ```
 
-## Step 6: Verify the alias is visible
+### Verify the Alias Is Visible
 
 Poll `/v1/models` until the new alias appears for the caller key:
 
@@ -156,7 +171,12 @@ if [ "${ANTHROPIC_ALIAS_VISIBLE}" != "true" ]; then
 fi
 ```
 
-## Step 7: Install the Anthropic SDK
+## Run the SDK Example
+
+Install the Anthropic SDK, point it at AISIX, and send one Anthropic-style
+request through the gateway.
+
+### Install the Anthropic SDK
 
 Create a small Python environment and install the SDK:
 
@@ -169,9 +189,10 @@ python -m venv .venv
 python -m pip install anthropic
 ```
 
-## Step 8: Create the SDK example
+### Create a Client Example
 
-Use your Anthropic-compatible client with the gateway base URL and your AISIX caller key:
+Use your Anthropic-compatible client with the gateway base URL and your AISIX
+caller key:
 
 ```python title="anthropic-sdk-example.py"
 import os
@@ -208,51 +229,58 @@ Run the example:
 python anthropic-sdk-example.py
 ```
 
-You should see a short assistant response. The exact text depends on the upstream model.
+You should see a short assistant response. The exact text depends on the
+upstream model.
 
-## Expected result
+### Verify the SDK Response
 
-If the gateway can resolve `claude-prod` and the upstream is reachable, the client receives an Anthropic-style message response from AISIX.
+If the gateway can resolve `claude-prod` and the upstream is reachable, the
+client receives an Anthropic-style message response from AISIX.
 
-At the client edge:
+At the client edge, the SDK sends the request to `POST /v1/messages`; `model`
+is the AISIX model alias, and `messages` plus `max_tokens` follow the
+Anthropic Messages format.
 
-- the SDK sends the request to `POST /v1/messages`
-- `model` is the AISIX model alias
-- `messages` and `max_tokens` follow the Anthropic Messages shape
+At the gateway layer, AISIX authenticates the caller key, checks
+`allowed_models`, resolves the alias, and injects the upstream Anthropic
+provider key.
 
-At the gateway layer, AISIX authenticates the caller key, checks `allowed_models`, resolves the alias, and injects the upstream Anthropic provider key.
+## Compatibility Notes
 
-## Compatibility notes
+`POST /v1/messages` can resolve both Anthropic-backed and non-Anthropic-backed
+model aliases. Anthropic-backed aliases preserve Anthropic-specific request and
+response behavior most directly.
 
-`POST /v1/messages` can resolve both Anthropic-backed and non-Anthropic-backed model aliases. Anthropic-backed aliases preserve Anthropic-specific request and response behavior most directly.
-
-Non-Anthropic translation is useful when you need a stable Anthropic-style client edge, but it is not feature-identical to native Anthropic behavior. If your application depends on tool-result round trips, thinking blocks, image blocks, or other Anthropic-specific content blocks, prefer an Anthropic-backed alias and validate the exact flow.
+Non-Anthropic translation is useful when you need a stable Anthropic-style
+client edge, but it is not feature-identical to native Anthropic behavior. If
+your application depends on tool-result round trips, thinking blocks, image
+blocks, or other Anthropic-specific content blocks, prefer an Anthropic-backed
+alias and validate the exact flow.
 
 For the full endpoint behavior, see [Anthropic Messages](../integration/anthropic-messages.md).
 
 ## Troubleshooting
 
-### The client gets `404`
+### Client Receives `404`
 
-Check that `AISIX_MODEL` is the AISIX alias, such as `claude-prod`, not only the raw upstream Anthropic model ID.
+Check that `AISIX_MODEL` is the AISIX alias, such as `claude-prod`, not only
+the upstream Anthropic model ID.
 
-### The client gets `403`
+### Client Receives `403`
 
-The caller key is valid, but its `allowed_models` list does not include the alias you requested.
+The caller key is valid, but its `allowed_models` list does not include the
+alias you requested.
 
-### The client works with `curl` but not the SDK
+### Client Works With cURL but Not the SDK
 
-Compare these three values first:
+Check `AISIX_API_KEY`, `AISIX_BASE_URL`, and `AISIX_MODEL` first. Then compare
+the SDK request body with the request pattern in
+[Anthropic Messages](../integration/anthropic-messages.md#request-pattern).
 
-- `AISIX_API_KEY`
-- `AISIX_BASE_URL`
-- `AISIX_MODEL`
+## Clean Up the Extra Alias
 
-Then compare the SDK request body with the request pattern in [Anthropic Messages](../integration/anthropic-messages.md#request-pattern).
-
-## Clean up the extra alias
-
-If you created the Anthropic-backed alias only for this guide, delete it before deleting the provider key:
+If you created the Anthropic-backed alias only for this walkthrough, delete it
+before deleting the provider key:
 
 ```shell
 curl -sS -X DELETE http://127.0.0.1:3001/admin/v1/models/${ANTHROPIC_MODEL_ID} \
@@ -264,11 +292,16 @@ curl -sS -X DELETE http://127.0.0.1:3001/admin/v1/provider_keys/${ANTHROPIC_PROV
   -H "Authorization: Bearer ${AISIX_ADMIN_KEY}"
 ```
 
-If you want to remove every local quickstart resource, run the cleanup section in [Understand admin resources](first-model-first-key-first-request.md#clean-up-when-done), then stop the local stack.
+To remove every local quickstart resource, run the cleanup section in
+[Understand Admin Resources](first-model-first-key-first-request.md#clean-up-when-done),
+then stop the local stack.
 
-## Next steps
+## Related Reading
 
-- [Anthropic Messages](../integration/anthropic-messages.md) — review the full `/v1/messages` gateway contract.
-- [Streaming](../integration/streaming.md) — understand SSE behavior across endpoint families.
-- [OpenAI client to Anthropic upstream](../tutorials/openai-client-to-anthropic-upstream.md) — route OpenAI-shaped clients to an Anthropic upstream.
-- [Provider compatibility](../reference/provider-compatibility.md) — check current provider and endpoint boundaries.
+For `/v1/messages` behavior, see
+[Anthropic-style Messages API](../integration/anthropic-messages.md). For SSE
+behavior across endpoint families, see [Streaming](../integration/streaming.md).
+To route OpenAI-compatible clients to an Anthropic upstream, see
+[OpenAI client to Anthropic upstream](../tutorials/openai-client-to-anthropic-upstream.md).
+For provider support, see
+[Provider compatibility](../reference/provider-compatibility.md).

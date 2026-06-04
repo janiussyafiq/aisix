@@ -1,85 +1,95 @@
 ---
 title: Provider Passthrough
-description: Use the raw provider passthrough route when you need an upstream endpoint that AISIX AI Gateway does not natively model.
+description: Use the provider passthrough route when you need an upstream endpoint that AISIX AI Gateway does not natively model.
 sidebar_position: 30
+toc_max_heading_level: 2
 ---
 
-AISIX AI Gateway exposes `ANY /passthrough/:provider/*rest` as a raw provider passthrough route.
+AISIX AI Gateway provides `ANY /passthrough/:provider/*rest` for provider
+passthrough requests.
 
-Use this when you need provider-specific endpoints that the gateway does not currently model directly.
+Passthrough is available for provider-specific endpoints that the gateway does
+not model directly. It is a fallback path for narrow cases, not the preferred
+path for AI traffic already covered by first-class gateway routes.
 
-This is the escape hatch, not the preferred first choice.
+## Passthrough Behavior
 
-## Current behavior
+The passthrough route accepts any HTTP method, preserves the query string,
+injects provider authentication from the selected provider key, and relays the
+upstream status, response body, and safe response headers.
 
-The passthrough route:
+The gateway forwards the request body and safe headers to the upstream provider.
+It strips hop-by-hop headers and the provider key's configured `strip_headers`
+before sending the request.
 
-- accepts any HTTP method
-- forwards the request body and safe headers to the upstream provider
-- strips hop-by-hop headers and the provider key's configured `strip_headers`
-- injects provider authentication from the selected provider key
-- preserves the query string
-- relays upstream status, response body, and safe response headers
+Compared with first-class routes, passthrough applies fewer request and response
+transformations for the caller.
 
-Compared with first-class routes, passthrough does much less normalization on your behalf.
+The `:provider` segment is used to find a configured model whose `provider`
+matches that value and that the caller key is allowed to access. The gateway
+uses that model to select the provider key and base URL for the passthrough
+request.
 
-## Provider resolution
+This route is provider-scoped, not model-scoped. It does not choose a specific
+model alias the way `/v1/chat/completions` does.
 
-The `:provider` segment is used to find a configured model whose `provider` matches that value and that the caller key is allowed to access. The gateway uses that model to borrow the provider key and base URL for the passthrough request.
+If the selected provider key does not set `api_base`, the gateway uses a known
+default only for providers with built-in defaults such as OpenAI, Anthropic,
+Google, and DeepSeek. For other providers, configure `api_base` explicitly.
 
-This route is provider-scoped, not model-scoped.
+Standard proxy authentication still applies. The caller key must be allowed to
+access at least one configured model for the requested provider before AISIX
+uses that provider key for passthrough.
 
-That distinction matters because the route is not choosing a specific model alias the way `/v1/chat/completions` does.
+Passthrough is still less precise than first-class routes because the path does
+not name a model alias. If you need strict model-level behavior for a specific
+model, prefer the gateway's first-class modeled endpoints where possible.
 
-If the selected provider key does not set `api_base`, the gateway uses a known default only for providers with built-in defaults such as OpenAI, Anthropic, Google, and DeepSeek. For other providers, configure `api_base` explicitly.
-
-## Important authorization boundary
-
-Standard proxy authentication still applies. The caller key must be allowed to access at least one configured model for the requested provider before AISIX lends that provider key through passthrough.
-
-Passthrough is still less precise than first-class routes because the path does not name a model alias. If you need strict model-level behavior for a specific model, prefer the gateway's first-class modeled endpoints where possible.
-
-## Example
+## Send a Passthrough Request
 
 ```shell
 curl -sS -X GET "http://127.0.0.1:3000/passthrough/openai/v1/fine_tuning/jobs" \
   -H "Authorization: Bearer YOUR_CALLER_API_KEY"
 ```
 
-## When to use passthrough
+## Use Cases
 
-- provider-specific APIs not yet exposed as first-class gateway routes
-- exploratory integration work
-- temporary access while waiting for a native gateway endpoint
+Passthrough is suitable for provider-specific APIs that are not exposed as
+first-class gateway routes, exploratory integration work, or temporary access
+while evaluating whether a native gateway endpoint is required.
 
-Avoid it when:
-
-- you need model-level authorization semantics
-- you want the gateway to normalize request or response shapes for you
-- a first-class route already exists for the capability you need
+Avoid passthrough when you need model-level authorization semantics, want the
+gateway to normalize request or response formats, or already have a first-class
+route for the capability.
 
 ## Troubleshooting
 
-### The call authenticates but hits the wrong upstream base
+### The Call Authenticates but Hits the Wrong Upstream Base
 
-Check which accessible configured model for that provider is being used to borrow the provider key and base URL.
+Check which accessible model for that provider is being used to select the
+provider key and base URL.
 
-### The request returns `403`
+### The Request Returns `403`
 
-The caller key is valid, but it is not allowed to access any configured model for the requested provider.
+The caller key is valid, but it is not allowed to access any configured model
+for the requested provider.
 
-### The call returns `400` with no default base URL
+### The Call Returns `400` with No Default Base URL
 
-Set `api_base` on the provider key. Passthrough does not know defaults for every provider label.
+Set `api_base` on the provider key. Passthrough does not know defaults for
+every provider label.
 
-### The route works but bypasses the model-level behavior you expected
+### The Route Works but Bypasses the Model-Level Behavior You Expected
 
-That is expected. Passthrough is intentionally thinner than first-class modeled routes.
+Passthrough applies fewer gateway transformations than first-class modeled
+routes. Use a modeled endpoint when model-level behavior is required.
 
-## Next steps
+## Related Reading
 
-- [OpenAI-compatible API](openai-compatible-api.md)
-- [Provider keys](../configuration/provider-keys.md)
-- [Provider compatibility](../reference/provider-compatibility.md)
-- [Errors and retries](errors-and-retries.md)
-- [Proxy API reference](../reference/proxy-api-reference.md)
+Use first-class routes in [OpenAI-compatible API](openai-compatible-api.md)
+when possible. Configure upstream credentials and header stripping with
+[Provider keys](../configuration/provider-keys.md), and check
+[Provider compatibility](../reference/provider-compatibility.md) before
+relying on passthrough. For errors and proxy API families, see
+[Errors and retries](errors-and-retries.md) and
+[Proxy API reference](../reference/proxy-api-reference.md).

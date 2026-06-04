@@ -1,47 +1,73 @@
 ---
 title: Architecture Overview
 sidebar_label: Overview
-description: Understand the AISIX AI Gateway architecture details that affect operation, scale, and provider compatibility.
+description: Understand the AISIX AI Gateway runtime model that affects operation, scale, and provider compatibility.
 sidebar_position: 1
 ---
 
-This section explains the runtime behavior behind AISIX AI Gateway
-features, including why a configuration change is not visible yet, how
-limits behave under load, and what happens when a client protocol is
-routed to a different provider family.
+AISIX AI Gateway separates client traffic from configuration loading, usage
+accounting, and provider translation.
 
-These pages are not required for the first request. They are useful when
-you are operating AISIX in production, designing a rollout, or debugging
-behavior that depends on the gateway's internal request path.
+Understanding these paths helps you plan production rollout behavior, size
+rate limits across replicas, and choose provider adapters that preserve the
+request details your applications need.
 
-## When to use this section
+## Runtime Request Flow
 
-Use these pages when you need to answer operational questions such as:
+AI requests are served from the configuration already loaded by each proxy. The
+proxy does not call the Admin API for every request. It authenticates the caller
+key, resolves the caller-facing model alias, selects the provider key, and then
+sends the request through the matching provider adapter.
 
-- Why did an admin write succeed, but the proxy still serves the previous
-  configuration?
-- How are request, token, and concurrency limits charged when provider
-  usage is only known after the upstream response?
-- What changes when an Anthropic Messages request is routed through a
-  non-Anthropic upstream provider?
+```mermaid
+sequenceDiagram
+  participant Client
+  participant Proxy as AISIX proxy
+  participant Store as etcd
+  participant Upstream as Provider API
 
-## Start with the right topic
+  Store-->>Proxy: Configuration watch updates snapshot
+  Client->>Proxy: Request with caller key and model alias
+  Proxy->>Proxy: Authenticate key and resolve alias
+  Proxy->>Proxy: Select provider key and adapter
+  Proxy->>Upstream: Provider request
+  Upstream-->>Proxy: Provider response
+  Proxy-->>Client: Caller-facing response
+```
 
-| Topic | Read this when you need to understand |
-| --- | --- |
-| [Snapshot and watch](snapshot-and-watch.md) | How dynamic resources propagate from etcd into each proxy instance, and why request handling does not call etcd directly. |
-| [Two-phase rate limit](two-phase-rate-limit.md) | How AISIX reserves request and concurrency capacity before dispatch, then records provider-reported token usage after the response. |
-| [Protocol translation](protocol-translation.md) | How AISIX serves Anthropic Messages traffic through Anthropic passthrough or cross-provider translation paths. |
+## Configuration Rollout
 
-## Related operational guides
+Configuration changes are written to etcd and watched by each proxy, but an
+admin write can succeed before every proxy has applied the updated
+configuration. Treat successful admin writes and proxy readiness as separate
+states when you create resources and immediately send traffic.
 
-Most operators can configure AISIX without reading every architecture
-page first. If you are troubleshooting production behavior, pair this
-section with the operational docs:
+For propagation checks and operational guidance, see
+[Configuration Propagation](/ai-gateway/configuration/configuration-propagation).
 
-- [Configuration propagation](/ai-gateway/configuration/configuration-propagation)
-  explains the user-visible propagation model.
-- [Rate limits](/ai-gateway/configuration/rate-limits) explains the
-  policy fields that feed the two-phase limiter.
-- [Troubleshooting](/ai-gateway/operations/troubleshooting) starts from
-  symptoms and points back to the relevant architecture detail.
+## Rate Limit and Usage Accounting
+
+Rate-limit accounting reserves request and concurrency capacity before
+the provider request, then records provider-reported token usage after the
+response.
+
+When you run more than one proxy replica, choose a shared rate-limit backend
+for quotas that must apply across replicas. See
+[Rate Limits](/ai-gateway/configuration/rate-limits).
+
+## Provider Translation
+
+Protocol translation keeps the highest fidelity when the caller and upstream
+use the same provider family. Anthropic Messages requests therefore keep more
+native detail when routed to Anthropic upstreams than when translated to another
+provider family.
+
+Choose the adapter family that matches the upstream API format, then confirm
+endpoint support before exposing the alias to callers. See
+[Protocol Translation](protocol-translation.md) and
+[Adapter Protocol Families](/ai-gateway/reference/adapters).
+
+## Related Reading
+
+For deeper architecture topics, see [Configuration Watch Architecture](snapshot-and-watch.md)
+and [Two-Phase Rate Limit](two-phase-rate-limit.md).

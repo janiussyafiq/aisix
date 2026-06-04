@@ -2,51 +2,54 @@
 title: Guardrails
 description: Configure content checks for chat requests and responses in AISIX AI Gateway.
 sidebar_position: 38
+toc_max_heading_level: 2
 ---
 
-Guardrails apply content policy at the gateway boundary. They can block prompts
-before they reach an upstream provider, block responses before they reach a
-caller, or record a bypass when a remote guardrail is unavailable and the policy
-is configured to fail open.
+Guardrails apply content policy at the gateway. They can block prompts before
+they reach an upstream provider, block responses before they reach a caller, or
+record a bypass when a remote guardrail is unavailable and the policy is
+configured to fail open.
 
-Current guardrails run on `POST /v1/chat/completions` and `POST /v1/messages`.
-Other proxy endpoints do not run the same guardrail chain today.
+Guardrails run on `POST /v1/chat/completions` and `POST /v1/messages`.
 
-## Choose a guardrail kind
+## Choose a Guardrail Kind
 
-| Kind | Use when | Operational dependency |
+| Kind | Use When | Operational Dependency |
 | --- | --- | --- |
 | `keyword` | You need deterministic local blocking for literals or regex patterns. | Runs inside the data plane and does not depend on an external provider. |
-| `bedrock` | You already operate AWS Bedrock guardrails and want AISIX to call Bedrock `ApplyGuardrail` at the proxy boundary. | Requires Bedrock credentials, network reachability, and the default `bedrock` build feature. |
+| `bedrock` | You already operate AWS Bedrock guardrails and want AISIX to call Bedrock `ApplyGuardrail` during proxy handling. | Requires Bedrock credentials, network reachability, and the default `bedrock` build feature. |
 | `azure_content_safety` | You want Azure AI Content Safety Prompt Shield checks for jailbreak or indirect prompt-injection detection. | Requires Azure Content Safety credentials, network reachability, and the default `azure-content-safety` build feature. |
 
-Remote guardrails are operational dependencies. Treat credentials, network
+Remote guardrails depend on external services. Treat credentials, network
 reachability, timeouts, and `fail_open` as part of the policy.
 
 ## Prerequisites
 
-Decide three things before creating a guardrail:
-
-- which traffic should be inspected: request input, provider output, or both
-- what should happen when a remote guardrail is unavailable: block or fail open
-- whether the guardrail should apply environment-wide or through an attachment
+Before creating a guardrail, decide which traffic should be inspected, whether
+remote-guardrail outages should block or fail open, and whether the policy
+should apply environment-wide or through an attachment.
 
 In standalone mode, `/admin/v1/guardrails` creates guardrail definitions. It
-does not currently create `GuardrailAttachment` rows, so attachment-scoped
-rollout requires a managed projection path or direct config-store workflow.
+does not create `GuardrailAttachment` rows, so attachment-scoped
+rollout requires AISIX Cloud projection or direct config-store management.
 
-## Hook point
+## Configure Guardrails
+
+Choose the hook point, then create the guardrail definition for the policy
+backend you want to use.
+
+### Hook Point
 
 `hook_point` controls where the guardrail runs:
 
-- `input` checks the caller request before upstream dispatch.
+- `input` checks the caller request before it reaches the provider.
 - `output` checks the upstream response before it is returned to the caller.
 - `both` checks both sides.
 
 Input blocking prevents the prompt from reaching the provider. Output blocking
 prevents the provider response from reaching the caller.
 
-## Create a keyword guardrail
+### Create a Keyword Guardrail
 
 Keyword guardrails support literal and regex patterns:
 
@@ -72,7 +75,7 @@ disable the policy.
 An empty keyword pattern list is valid but inert. It behaves like a guardrail
 that allows every request.
 
-## Create a Bedrock guardrail
+### Create a Bedrock Guardrail
 
 `kind: "bedrock"` calls AWS Bedrock `ApplyGuardrail`:
 
@@ -105,7 +108,7 @@ continues as a bypass or is blocked.
 for every Bedrock guardrail in the deployment. Use it for private or test
 Bedrock endpoints; it is not configured per guardrail row.
 
-## Create an Azure Prompt Shield guardrail
+### Create an Azure Prompt Shield Guardrail
 
 `kind: "azure_content_safety"` calls Azure AI Content Safety Prompt Shield:
 
@@ -128,9 +131,14 @@ on the configured endpoint and authenticates with
 `timeout_ms` defaults to `5000`. A timeout, throttling response, 5xx response,
 or configuration error follows `fail_open`.
 
-## Scope guardrails
+## Runtime Behavior
 
-The runtime resolves guardrails from two resource types:
+Review how AISIX scopes guardrails, handles managed-resource fields, and
+returns guardrail decisions to callers.
+
+### Scope Guardrails
+
+AISIX resolves guardrails from two resource types:
 
 - `Guardrail`, the policy definition.
 - `GuardrailAttachment`, the binding between a guardrail and a scope.
@@ -140,38 +148,29 @@ key entry, or a team bucket. When the same guardrail matches through more than
 one attachment, the highest `priority` wins. If priority is tied, the more
 specific scope wins.
 
-Current standalone admin boundary:
+The standalone `/admin/v1/guardrails` API manages guardrail definitions.
+Attachment rows come from managed projection or a direct config-store workflow.
 
-- `/admin/v1/guardrails` manages guardrail definitions.
-- There is no standalone admin route for `guardrail_attachments` yet.
-- Managed control-plane projection or direct config-store writes can provide
-  attachment rows.
+A guardrail definition with no attachment rows applies environment-wide at
+priority `0`. As soon as any attachment row exists for that guardrail,
+attachment semantics take over. If all of those attachments are disabled, the
+guardrail does not run.
 
-For compatibility with older control planes, a guardrail definition with no
-attachment rows applies environment-wide at priority `0`. As soon as any
-attachment row exists for that guardrail, attachment semantics take over. If all
-of those attachments are disabled, the guardrail does not run.
+### Fields Accepted Without Enforcement
 
-## Stored fields that are not full runtime controls
+Some fields are accepted with the resource but do not currently change how
+AISIX evaluates guardrails.
 
-The generated schema includes fields that are stored for control-plane
-compatibility but are not full runtime switches today.
+| Field | Accepted On | Runtime Behavior |
+| --- | --- | --- |
+| `enforcement_mode: "monitor"` | Guardrail definition | Records the requested posture. AISIX still blocks when the guardrail fires. |
+| `mandatory` | Guardrail definition | Accepted but does not currently change enforcement. `fail_open` controls the remote-guardrail error path. |
+| `direction` | Guardrail attachment | Accepted on projected resources. Configure `hook_point` on the guardrail definition to control input and output checking. |
 
-`enforcement_mode: "monitor"` is not monitor-only in the current data plane. If
-a guardrail fires, it blocks traffic even when the row says `monitor`.
+For accepted fields, use [Resource schemas](../reference/resource-schemas.md)
+and the [Admin API reference](/ai-gateway/reference/admin-api).
 
-`mandatory` is stored and forwarded, but the data plane does not consult it.
-`fail_open` controls the current remote-guardrail error path.
-
-`direction` on attachments is stored for dashboard/control-plane compatibility.
-Use `hook_point` on the guardrail definition to control input and output
-checking.
-
-For the exact accepted shape, use the generated
-[Resource schemas](../reference/resource-schemas.md) and the live
-[Admin API reference](/ai-gateway/reference/admin-api).
-
-## Response behavior
+### Response Behavior
 
 Guardrail denials return `422`.
 
@@ -181,37 +180,35 @@ bypass reason in usage telemetry.
 
 ## Troubleshooting
 
-### The resource saves but nothing is blocked
+### The Resource Saves but Nothing Is Blocked
 
 Confirm you are testing `POST /v1/chat/completions` or `POST /v1/messages`.
-Other proxy endpoints do not run the same guardrail chain today.
+Those are the proxy routes that run the guardrail chain.
 
 Then check that the guardrail is `enabled`, the `hook_point` covers the side you
 are testing, the request or response contains inspectable content, and the rule
-has a matching attachment or is relying on the environment-wide compatibility
-fallback.
+has a matching attachment or is using the environment-wide default behavior.
 
 For remote guardrails, also check credentials, endpoint reachability, timeout
 settings, and whether your data-plane build includes the relevant feature.
 
-### A blocked request returns `422`
+### A Blocked Request Returns `422`
 
-That is expected for current guardrail denials.
+Guardrail denials return `422`.
 
-### A remote guardrail lets traffic through during an outage
+### A Remote Guardrail Lets Traffic Through During an Outage
 
 Check `fail_open`. When it is `true`, remote guardrail failures bypass blocking
 and appear in telemetry as a guardrail bypass reason.
 
-### `enforcement_mode: "monitor"` still blocks traffic
+### Monitor Mode Still Blocks Traffic
 
-That is expected today. Monitor-only enforcement is not implemented in the data
-plane.
+The stored `monitor` posture does not make the data plane allow a matched
+guardrail violation.
 
-## Next steps
+## Related Reading
 
-- [Admin API](admin-api.md) explains standalone guardrail CRUD.
-- [Configuration overview](overview.md) explains dynamic resources and managed
-  projection.
-- [Headers and error codes](../reference/headers-and-error-codes.md) describes
-  caller-visible denial responses.
+For standalone guardrail CRUD, see [Admin API](admin-api.md). For the
+dynamic-resource model, see [Configuration overview](overview.md). For
+caller-visible denial responses, see
+[Headers and error codes](../reference/headers-and-error-codes.md).

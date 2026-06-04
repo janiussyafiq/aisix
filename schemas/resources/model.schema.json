@@ -44,14 +44,14 @@
       "type": "string"
     },
     "model_name": {
-      "description": "Upstream model id sent to the provider — the literal string the upstream LLM API expects in its `model` field (e.g. `\"gpt-4o\"`, `\"claude-sonnet-4-5\"`, `\"gpt-4o-mini-2024-08-06\"`). `None` for routing models.\n\n**NOTE — this field name is a known footgun.** Some other proxy gateways define a `model_name` field that holds the *customer-facing alias* (the name a client SDK sends), with a separate `model` sub-field holding the upstream id. In this codebase the convention is reversed: `display_name` (above) is the customer-facing alias, and **`model_name` is the upstream id**. When reading or writing this struct, do not assume the field name alone disambiguates the role — read the docs.\n\nRenaming this field to `upstream_id` to remove the ambiguity is tracked at api7/AISIX-Cloud#470 but deferred behind a coordinated wire-format change across cp-api + dashboard.",
+      "description": "Upstream model id sent to the provider: the literal string the upstream LLM API expects in its `model` field (e.g. `\"gpt-4o\"`, `\"claude-sonnet-4-5\"`, `\"gpt-4o-mini-2024-08-06\"`). `None` for routing models.\n\n**NOTE: this field name is a known footgun.** Some other proxy gateways define a `model_name` field that holds the *customer-facing alias* (the name a client SDK sends), with a separate `model` sub-field holding the upstream id. In this codebase the convention is reversed: `display_name` (above) is the customer-facing alias, and **`model_name` is the upstream id**. When reading or writing this struct, do not assume the field name alone disambiguates the role. Read the docs.\n\nRenaming this field to `upstream_id` to remove the ambiguity is tracked at api7/AISIX-Cloud#470 but deferred behind a coordinated wire-format change across cp-api + dashboard.",
       "type": [
         "string",
         "null"
       ]
     },
     "provider": {
-      "description": "Upstream vendor identity, free-form string (e.g. `\"openai\"`, `\"xai\"`, `\"openrouter\"`, any models.dev catalog id). Primary dispatch reads `ProviderKey.adapter` + `ProviderKey.provider` via `Hub::dispatch_two_tier`, so a new long-tail vendor admitted by cp-api works without a DP code change. `Model.provider` is additionally consumed by:\n\n1. Anti-misdispatch gates that reject cross-provider routing for endpoints whose wire shape is vendor-specific: - `/v1/messages` (`crates/aisix-proxy/src/messages.rs:290`) — non-anthropic Models go through `cross_provider_dispatch`. - `/v1/responses` (`crates/aisix-proxy/src/responses.rs:117`) — non-openai Models rejected with 400. - `/v1/images/generations` (`crates/aisix-proxy/src/images.rs:124`) — non-openai Models rejected with 400. 2. `/v1/rerank` vendor gate + access-log label (`crates/aisix-proxy/src/rerank.rs:125,145`); Cohere/Jina each have a native rerank surface that bypasses the Bridge trait, so this path stays keyed on `Model.provider`. 3. Telemetry / access-log labels via `dispatch::require_provider()` on every bridge-dispatching endpoint (chat, completions, embeddings, images, audio, rerank).\n\nBridge dispatch itself is keyed on the ProviderKey's `provider`/`adapter` (`Hub::dispatch_two_tier`), not on this field.\n\n`None` for routing models.\n\nCloses the schema-validation half of api7/AISIX-Cloud#417 and the dispatch half of api7/AISIX-Cloud#302 Phase A.",
+      "description": "Upstream vendor identity, free-form string (e.g. `\"openai\"`, `\"xai\"`, `\"openrouter\"`, any models.dev catalog id). Primary dispatch reads `ProviderKey.adapter` + `ProviderKey.provider` via `Hub::dispatch_two_tier`, so a new long-tail vendor admitted by cp-api works without a DP code change. `Model.provider` is additionally consumed by:\n\n1. Anti-misdispatch gates that reject cross-provider routing for endpoints whose wire shape is vendor-specific: - `/v1/messages` (`crates/aisix-proxy/src/messages.rs:290`) Non-anthropic Models go through `cross_provider_dispatch`. - `/v1/responses` (`crates/aisix-proxy/src/responses.rs:117`) Non-openai Models rejected with 400. - `/v1/images/generations` (`crates/aisix-proxy/src/images.rs:124`). Non-openai Models rejected with 400. 2. `/v1/rerank` vendor gate + access-log label (`crates/aisix-proxy/src/rerank.rs:125,145`); Cohere/Jina each have a native rerank surface that bypasses the Bridge trait, so this path stays keyed on `Model.provider`. 3. Telemetry / access-log labels via `dispatch::require_provider()` on every bridge-dispatching endpoint (chat, completions, embeddings, images, audio, rerank).\n\nBridge dispatch itself is keyed on the ProviderKey's `provider`/`adapter` (`Hub::dispatch_two_tier`), not on this field.\n\n`None` for routing models.\n\nCloses the schema-validation half of api7/AISIX-Cloud#417 and the dispatch half of api7/AISIX-Cloud#302 Phase A.",
       "type": [
         "string",
         "null"
@@ -146,7 +146,7 @@
       "additionalProperties": false
     },
     "CooldownConfig": {
-      "description": "Request-path cooldown configuration for a direct model. Controls which upstream failures temporarily exclude this model from routing candidate selection, and for how long.\n\nCooldown is **independent** of request retry semantics — i.e. `Routing.retry_on_429` governs whether a 429 is retried within the current request, but `CooldownConfig.trigger_statuses` governs whether 429 takes the model out of rotation for subsequent requests. The two layers serve different purposes: - retry: short-window in-request recovery - cooldown: medium-window cross-request backpressure\n\nAll fields are optional; defaults preserve a safe behavior for any direct model that doesn't ship a `cooldown` block.",
+      "description": "Request-path cooldown configuration for a direct model. Controls which upstream failures temporarily exclude this model from routing candidate selection, and for how long.\n\nCooldown is **independent** of request retry semantics. That is, `Routing.retry_on_429` governs whether a 429 is retried within the current request, but `CooldownConfig.trigger_statuses` governs whether 429 takes the model out of rotation for subsequent requests. The two layers serve different purposes: - retry: short-window in-request recovery - cooldown: medium-window cross-request backpressure\n\nAll fields are optional; defaults preserve a safe behavior for any direct model that doesn't ship a `cooldown` block.",
       "type": "object",
       "properties": {
         "default_seconds": {
@@ -196,7 +196,7 @@
           ]
         },
         "trigger_statuses": {
-          "description": "Status codes that trigger cooldown. Default: `[401, 408, 429, 500, 502, 503, 504]` — auth failures and rate limits + transient server errors. `400/403/422` etc. are caller mistakes and intentionally excluded.",
+          "description": "Status codes that trigger cooldown. Default: `[401, 408, 429, 500, 502, 503, 504]`: auth failures and rate limits + transient server errors. `400/403/422` etc. are caller mistakes and intentionally excluded.",
           "type": [
             "array",
             "null"
@@ -232,10 +232,10 @@
       "additionalProperties": false
     },
     "OnAllFilteredPolicy": {
-      "description": "Behavior when every candidate target is filtered out by the runtime status layer (all in cooldown or background-unhealthy).\n\n`Fail` is the default because sending traffic to a target we know is currently bad — just because every other target is also bad — amplifies cascading outages. Operators that prefer the legacy behavior (try every candidate regardless of known state) can opt into `OriginalOrder` per routing model.",
+      "description": "Behavior when every candidate target is filtered out by the runtime status layer (all in cooldown or background-unhealthy).\n\n`Fail` is the default because sending traffic to a target we know is currently bad, just because every other target is also bad, amplifies cascading outages. Operators that prefer the legacy behavior (try every candidate regardless of known state) can opt into `OriginalOrder` per routing model.",
       "oneOf": [
         {
-          "description": "Return 503 with a fixed Retry-After hint (currently 30 seconds — see `FALLBACK_ALL_UNHEALTHY_RETRY_AFTER` in `crates/aisix-proxy/src/chat.rs`). Default.\n\nThe hint is intentionally coarse: by the time the filter reaches the all-filtered branch, every candidate is background-unhealthy with no live cooldown timer (cooldown candidates are returned via the Selected branch one tier up). A future version may derive the hint from probe metadata; the current contract is a flat fallback.",
+          "description": "Return 503 with a fixed Retry-After hint (currently 30 seconds; see `FALLBACK_ALL_UNHEALTHY_RETRY_AFTER` in `crates/aisix-proxy/src/chat.rs`). Default.\n\nThe hint is intentionally coarse: by the time the filter reaches the all-filtered branch, every candidate is background-unhealthy with no live cooldown timer (cooldown candidates are returned via the Selected branch one tier up). A future version may derive the hint from probe metadata; the current contract is a flat fallback.",
           "type": "string",
           "enum": [
             "fail"
@@ -272,7 +272,7 @@
           "minimum": 0.0
         },
         "rph": {
-          "description": "Requests per hour (3600s window). Added in #426 — see module docstring. Per-hour tokens (`tph`) intentionally NOT shipped; see ai-gateway#396.",
+          "description": "Requests per hour (3600s window). Added in #426; see module docstring. Per-hour tokens (`tph`) intentionally NOT shipped; see ai-gateway#396.",
           "type": [
             "integer",
             "null"
@@ -290,7 +290,7 @@
           "minimum": 0.0
         },
         "rps": {
-          "description": "Requests per second (1s window). Added in #426 — see module docstring. Per-second tokens (`tps`) intentionally NOT shipped; see api7/ai-gateway#396 for the design tracking issue.",
+          "description": "Requests per second (1s window). Added in #426; see module docstring. Per-second tokens (`tps`) intentionally NOT shipped; see api7/ai-gateway#396 for the design tracking issue.",
           "type": [
             "integer",
             "null"
@@ -388,7 +388,7 @@
           ]
         },
         {
-          "description": "Failover is the safest default — predictable order, no shared state, no surprises on first deploy.",
+          "description": "Failover is the safest default: predictable order, no shared state, no surprises on first deploy.",
           "type": "string",
           "enum": [
             "failover"

@@ -1,4 +1,4 @@
-//! `Guardrail` entity — content-policy hooks the DP runs on every
+//! `Guardrail` entity - content-policy hooks the DP runs on every
 //! chat request. The control plane (cp-api) writes these to etcd at
 //! `/aisix/<env>/guardrails/<uuid>`; the DP loads them on watch and
 //! the `aisix-proxy::ProxyState::guardrail_index` resolves the
@@ -11,9 +11,9 @@
 //! so old kine rows (written before P0c CP lands) still parse.
 //!
 //! Two run sites per request (matches `aisix-guardrails::Guardrail`):
-//!   * `input`  — runs before bridge dispatch; a block here means the
+//!   * `input` - runs before bridge dispatch; a block here means the
 //!     prompt never reaches the upstream.
-//!   * `output` — runs after the upstream response lands; a block
+//!   * `output` - runs after the upstream response lands; a block
 //!     here means the response never reaches the caller.
 //!
 //! Production keeps both sides on by default. The `hook_point` field
@@ -22,16 +22,16 @@
 //!
 //! Rule kinds:
 //!
-//!   * `keyword` — literal/regex blocklist; runs entirely in DP
+//!   * `keyword` - literal/regex blocklist; runs entirely in DP
 //!     process. Configured via `keyword.patterns` (list of
 //!     `{ kind: "literal" | "regex", value: "..." }`).
-//!   * `bedrock` — calls AWS Bedrock's `ApplyGuardrail`. Phase 1
+//!   * `bedrock` - calls AWS Bedrock's `ApplyGuardrail`. Phase 1
 //!     parses + accepts the kind but the chain builder logs
 //!     "bedrock not yet implemented" and skips the row; Phase 2
-//!     wires the actual dispatch (PRD-09c §6.7).
-//!   * `azure_content_safety` — calls Azure AI Content Safety Prompt
+//!     wires the actual dispatch (PRD-09c section 6.7).
+//!   * `azure_content_safety` - calls Azure AI Content Safety Prompt
 //!     Shield (`/contentsafety/text:shieldPrompt`). Detects jailbreak
-//!     and indirect injection attacks. P1 (PRD-09c §6 P1).
+//!     and indirect injection attacks. P1 (PRD-09c section 6 P1).
 //!
 //! See `aisix-guardrails/src/keyword.rs` for the runtime semantics
 //! the snapshot is parsed into.
@@ -71,7 +71,7 @@ pub enum KeywordPattern {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct KeywordConfig {
-    /// Blocklist patterns. Empty list is legal but pointless — the
+    /// Blocklist patterns. Empty list is legal but pointless. The
     /// guardrail will allow every request, same as `enabled: false`.
     pub patterns: Vec<KeywordPattern>,
 }
@@ -82,7 +82,7 @@ pub struct KeywordConfig {
 ///
 /// Wire shape on the kine path is plaintext: cp-api decrypts the
 /// envelope-encrypted secret at projection time (same trust
-/// boundary as `provider_keys` — see PRD-09c §6.3). The DP only
+/// boundary as `provider_keys`; see PRD-09c section 6.3). The DP only
 /// ever holds plaintext in memory; it does not need a master key.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -99,7 +99,7 @@ pub enum BedrockAWSCredentials {
 /// Per-guardrail latency policy for `kind: "bedrock"`. `serial`
 /// waits unconditionally; `timed` aborts at `timeout_ms` and
 /// applies the row-level `fail_open` flag. Range matches cp-api's
-/// validator (100..5000ms) — see PRD-09c §6.6.
+/// validator (100..5000ms); see PRD-09c section 6.6.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum BedrockLatencyMode {
@@ -109,7 +109,7 @@ pub enum BedrockLatencyMode {
 
 /// Config block for `kind: "azure_content_safety"`. Calls Azure AI
 /// Content Safety Prompt Shield API to detect jailbreak and indirect
-/// injection attacks. PRD-09c §6 P1.
+/// injection attacks. PRD-09c section 6 P1.
 ///
 /// The CP (cp-api) decrypts the envelope-encrypted `api_key` at kine-
 /// projection time so the DP always holds plaintext in memory; the
@@ -130,7 +130,7 @@ pub struct AzureContentSafetyConfig {
     ///
     /// **`0` does not mean "no timeout".** `Duration::ZERO` causes
     /// `tokio::time::timeout` to fire on the first poll, so every call
-    /// immediately maps to a timeout failure. Use `u32::MAX` (≈ 49 days)
+    /// immediately maps to a timeout failure. Use `u32::MAX` (about 49 days)
     /// for an effectively unlimited timeout.
     #[serde(default = "default_acs_timeout_ms")]
     pub timeout_ms: u32,
@@ -143,7 +143,7 @@ fn default_acs_timeout_ms() -> u32 {
 /// Config block for `kind: "azure_content_safety_text_moderation"`. Calls
 /// Azure AI Content Safety `text:analyze` for category-severity + blocklist
 /// moderation on input and/or output (including streaming output). P2
-/// (PRD-09c §6 P2, #379).
+/// (PRD-09c section 6 P2, #379).
 ///
 /// Reuses the P1 connection block (endpoint + api_key + timeout_ms). cp-api
 /// projects only operator-set fields (omitempty), so every optional field
@@ -287,12 +287,12 @@ pub enum GuardrailKind {
     Bedrock(BedrockConfig),
     /// Azure AI Content Safety Prompt Shield. Detects jailbreak and
     /// indirect injection attacks via the `/contentsafety/text:shieldPrompt`
-    /// API. P1 (PRD-09c §6 P1).
+    /// API. P1 (PRD-09c section 6 P1).
     AzureContentSafety(AzureContentSafetyConfig),
     /// Azure AI Content Safety Text Moderation. Category-severity +
     /// blocklist moderation via the `/contentsafety/text:analyze` API,
     /// on input and/or output (including streaming output). P2
-    /// (PRD-09c §6 P2, #379).
+    /// (PRD-09c section 6 P2, #379).
     AzureContentSafetyTextModeration(AzureContentSafetyTextModerationConfig),
 }
 
@@ -325,7 +325,7 @@ pub struct Guardrail {
     /// can't reach its upstream. `true` lets the request through
     /// (recorded in usage_events.guardrail_bypassed_reason);
     /// `false` blocks with 422. No-op for `kind=keyword`. Defaults
-    /// `true` (matches the PG schema default + PRD-09c §6.4).
+    /// `true` (matches the PG schema default + PRD-09c section 6.4).
     #[serde(default = "default_fail_open")]
     pub fail_open: bool,
 
@@ -340,10 +340,10 @@ pub struct Guardrail {
     // cp-api's marshalGuardrailKV will start emitting these once the P0c
     // CP PR lands. Until then, old kine rows omit them and the defaults apply.
     /// How the DP behaves when this guardrail fires.
-    /// `"block"` (default) — reject the request.
-    /// `"monitor"` — let the request through and record the event
+    /// `"block"` (default): reject the request.
+    /// `"monitor"`: let the request through and record the event
     ///   (**not yet implemented**; the DP currently always blocks regardless
-    ///   of this field — do not set `"monitor"` expecting pass-through
+    ///   of this field. Do not set `"monitor"` expecting pass-through
     ///   behavior until a future release wires it into the chain).
     #[serde(default = "default_enforcement_mode")]
     pub enforcement_mode: String,
@@ -353,7 +353,7 @@ pub struct Guardrail {
     /// blocked regardless of `fail_open`.
     /// When `false` (default), `fail_open` governs the error path.
     ///
-    /// **Not yet implemented** — the field is stored and forwarded to
+    /// **Not yet implemented**. The field is stored and forwarded to
     /// the CP dashboard but the DP does not yet consult it; `fail_open`
     /// alone governs error behavior in the current release.
     #[serde(default)]
@@ -404,7 +404,7 @@ impl Resource for Guardrail {
 }
 
 // ---------------------------------------------------------------------------
-// GuardrailAttachment — P0c
+// GuardrailAttachment - P0c
 // ---------------------------------------------------------------------------
 
 /// Which dimension of the request a guardrail attachment is scoped to.
@@ -421,7 +421,7 @@ pub enum GuardrailScopeType {
     Team,
 }
 
-/// One attachment row — written by cp-api to `/aisix/<env>/guardrail_attachments/<uuid>`.
+/// One attachment row, written by cp-api to `/aisix/<env>/guardrail_attachments/<uuid>`.
 ///
 /// The DP loads these alongside the guardrail definitions and builds a
 /// `GuardrailIndex` that resolves the applicable chain per request via
@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn unknown_field_rejected_by_inner_kind_struct() {
         // The outer Guardrail can't use deny_unknown_fields (see its
-        // doc comment), but the inner KeywordConfig does — and serde
+        // doc comment), but the inner KeywordConfig does; serde
         // surfaces unknown fields from the flattened inner type at
         // the top level. Net effect: typos are still caught.
         let v = json!({

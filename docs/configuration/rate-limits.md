@@ -1,6 +1,7 @@
 ---
 title: Rate Limits
 description: Configure request, token, and concurrency limits for callers and models in AISIX AI Gateway.
+toc_max_heading_level: 2
 sidebar_position: 36
 ---
 
@@ -8,10 +9,10 @@ Rate limits protect upstream providers and keep one caller, model, team, or
 member from consuming the whole gateway.
 
 AISIX evaluates every request against each matching limit layer. The request
-must pass all layers before it is dispatched upstream. If any layer has no
+must pass all layers before it reaches the upstream provider. If any layer has no
 headroom, the proxy returns `429`.
 
-## Choose where the limit belongs
+## Choose Where the Limit Belongs
 
 Start with the narrowest place that matches your operating goal.
 
@@ -28,9 +29,14 @@ bucket.
 All matching layers are enforced together. A permissive API-key limit does not
 override a tighter model or policy limit.
 
-## Inline limits
+## Configure Rate Limits
 
-API keys and models share the same inline rate-limit shape:
+Configure inline limits on API keys or models, or use a scoped policy when the
+limit should apply across a wider bucket.
+
+### Inline Limits
+
+API keys and models share the same inline rate-limit configuration:
 
 ```json
 {
@@ -47,16 +53,15 @@ Each field is optional. Missing fields do not limit that dimension, and an empty
 
 Common fields are:
 
-- `rpm` for requests per minute.
-- `tpm` for tokens per minute.
-- `concurrency` for in-flight request protection.
-- `rps`, `rph`, and `rpd` when the request window should be one second, one
-  hour, or one day.
-- `tpd` when you need a daily token cap.
+| Field | Limit |
+| --- | --- |
+| `rps`, `rpm`, `rph`, `rpd` | Request count per second, minute, hour, or day. |
+| `tpm`, `tpd` | Token count per minute or day. |
+| `concurrency` | In-flight requests. |
 
-There is no `tps` or `tph` token field today.
+Token limits are configured with `tpm` and `tpd`.
 
-## Create a caller limit
+### Create a Caller Limit
 
 Add an inline limit to an API key when the quota should follow one caller key:
 
@@ -75,7 +80,7 @@ Add an inline limit to an API key when the quota should follow one caller key:
 This limit is checked after the gateway authenticates the caller and before the
 request reaches the upstream provider.
 
-## Create a model limit
+### Create a Model Limit
 
 Add an inline limit to a model when the quota should follow a model alias:
 
@@ -94,9 +99,9 @@ Add an inline limit to a model when the quota should follow a model alias:
 
 Every caller that targets `gpt-4o-prod` shares the model limit.
 
-## Add a policy limit
+### Add a Scoped Policy
 
-`RateLimitPolicy` is a standalone rule loaded from the gateway snapshot. Use it
+`RateLimitPolicy` is a standalone rule loaded from gateway configuration. Use it
 for shared subjects such as teams and members:
 
 ```json
@@ -121,89 +126,96 @@ for shared subjects such as teams and members:
 
 The supported policy scopes are:
 
-- `api_key`, matched against the authenticated API-key entry ID.
-- `model`, matched against the resolved model entry ID.
-- `team`, matched against `ApiKey.team_id`.
-- `member`, matched against `ApiKey.user_id`.
+| Scope | Match Target |
+| --- | --- |
+| `api_key` | Authenticated API-key entry ID. |
+| `model` | Resolved model entry ID. |
+| `team` | `ApiKey.team_id`. |
+| `member` | `ApiKey.user_id`. |
 
 For team and member policies to match, the authenticated API key must carry the
 corresponding `team_id` or `user_id`. Managed deployments can project those
 bindings from the control plane. The standalone `/admin/v1/apikeys` API does not
-currently set them, so self-hosted team/member policies require a control-plane
+set them, so self-hosted team/member policies require a control-plane
 or direct config-store path that writes those fields.
 
-## Policy windows
+## Behavior Details
+
+Review policy windows, config-store loading, and caller-visible response
+behavior before applying shared limits broadly.
+
+### Policy Windows
 
 Policy windows map into the same limiter fields used by inline limits:
 
-- `second` maps `max_requests` to `rps`.
-- `minute` maps `max_requests` to `rpm` and `max_tokens` to `tpm`.
-- `hour` maps `max_requests` to `rph`.
+| Window | Mapping |
+| --- | --- |
+| `second` | `max_requests` maps to `rps`. |
+| `minute` | `max_requests` maps to `rpm`; `max_tokens` maps to `tpm`. |
+| `hour` | `max_requests` maps to `rph`. |
 
-The data plane intentionally does not convert a second window into a minute
-bucket, or an hour window into a day bucket. Those conversions would let a caller
-spend the declared window too quickly.
+The gateway does not convert a second window into a minute bucket, or an hour
+window into a day bucket. Those conversions would let a caller spend the
+declared window too quickly.
 
-Token policy limits are enforced for `minute` windows today. `max_tokens` on
-`second` or `hour` policies is accepted by the policy shape but ignored by the
-quota mapper because per-second and per-hour token counters are not implemented.
-The data plane logs a warning when it sees that shape.
+Token policy limits are enforced for `minute` windows. `max_tokens` on
+`second` or `hour` policies is accepted by the configuration but ignored by the
+quota mapper. AISIX logs a warning when it sees that configuration.
 
 At least one of `max_requests` or `max_tokens` must be set.
 
-## Provision policy rows
+### Configure Policy Rows
 
 `RateLimitPolicy` rows are loaded from etcd under
 `<prefix>/rate_limit_policies/<id>`.
 
-The standalone admin API does not currently expose CRUD routes for rate-limit
+The standalone admin API does not expose CRUD routes for rate-limit
 policies. In managed mode, use the control-plane projection path. In self-hosted
 setups, write rows directly through your config-store workflow.
 
-Malformed rows are skipped and surfaced through the rejection signal; other
-valid rows continue to load.
+Malformed rows are skipped and reported through configuration load diagnostics;
+other valid rows continue to load.
 
-For the exact policy schema, use the generated [Resource schemas](../reference/resource-schemas.md).
+For the exact policy schema, use
+[Resource schemas](../reference/resource-schemas.md).
 
-## Response behavior
+### Response Behavior
 
 When any layer rejects a request, the proxy returns `429`. If the limiter can
 calculate a retry window, the response includes `Retry-After`.
 
 Successful non-streaming chat responses include `x-ratelimit-*` headers based on
-the limiter state after dispatch. Use those headers for debugging and client-side
-adaptive throttling.
+the limiter state after the provider request. Use those headers for debugging
+and client-side adaptive throttling.
 
 ## Troubleshooting
 
-### A caller sees `429` unexpectedly
+### A Caller Sees `429` Unexpectedly
 
-Check the matching layers in this order:
-
-1. The authenticated `ApiKey.rate_limit`.
-2. The resolved `Model.rate_limit`.
-3. Any `RateLimitPolicy` rows that match the API key, model, team, or member.
+Check the matching layers in this order: `ApiKey.rate_limit` on the
+authenticated API key, `Model.rate_limit` on the resolved model, and any
+`RateLimitPolicy` rows that match the API key, model, team, or member.
 
 Any one of those layers can be the gating layer.
 
-### A team or member policy does not take effect
+### A Team or Member Policy Does Not Take Effect
 
 Check whether the API key row includes `team_id` or `user_id`. Team and member
 policies match the API-key row, not an external membership database.
 
 If the key was created through the standalone admin API, those fields are not
-present today. Use API-key inline limits, model inline limits, or a projection
+present. Use API-key inline limits, model inline limits, or a projection
 path that writes the bucket fields.
 
-### Limits seem to apply only to chat
+### Limits Seem to Apply Only to Chat
 
-The shared quota gate is used across the current LLM endpoint set. If another
+The shared quota gate is used across the supported LLM endpoint set. If another
 endpoint does not appear to trip the limit, first confirm it resolves a model and
 is sending enough traffic to exhaust the configured bucket.
 
-## Next steps
+## Related Reading
 
-- [API keys](api-keys.md)
-- [Models](models.md)
-- [Budgets](budgets.md)
-- [Headers and error codes](../reference/headers-and-error-codes.md)
+For inline key and model limits, see [API keys](api-keys.md) and
+[Models](models.md). For managed spending controls, see [Budgets](budgets.md).
+For caller-visible `429` responses and retry hints, see
+[Headers and error codes](../reference/headers-and-error-codes.md).

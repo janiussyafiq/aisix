@@ -2,25 +2,25 @@
 title: Add Keyword Guardrails
 description: Block forbidden prompt content with a keyword guardrail in AISIX AI Gateway and verify the 422 content_filter rejection.
 sidebar_position: 82
+toc_max_heading_level: 2
 ---
 
-This tutorial shows you how to add a keyword guardrail that blocks chat requests containing a forbidden literal.
-
-You will:
-
-1. Create a keyword guardrail.
-2. Send a request that should pass.
-3. Send a request that should be blocked.
-4. Delete the guardrail.
+Add a keyword guardrail that blocks chat requests containing a forbidden
+literal. You create the guardrail, verify both allowed and blocked traffic, and
+remove the guardrail at the end.
 
 ## Prerequisites
 
-- A running gateway from the [Quickstart](../quickstart)
-- A direct model and caller API key from [Understand admin resources](../quickstart/first-model-first-key-first-request.md) — this tutorial reuses `gpt-4o-prod` and `sk-demo-caller` as canonical names
-- The caller key must include the model in `allowed_models` (or be a wildcard `["*"]`)
-- `jq`, used to capture the guardrail ID
+Before you start, run the gateway from the [Quickstart](../quickstart) and
+create a direct model plus caller API key with
+[Understand Admin Resources](../quickstart/first-model-first-key-first-request.md).
+The commands use `gpt-4o-prod` and `sk-demo-caller`. The caller key must include
+the model in `allowed_models`, or use the wildcard value `["*"]`. Install `jq`
+to capture the guardrail ID from the admin API response.
 
-## Set variables
+## Configure the Guardrail
+
+### Set Variables
 
 ```shell
 export AISIX_ADMIN_KEY="admin-local-only-change-me"
@@ -29,9 +29,11 @@ export AISIX_MODEL="gpt-4o-prod"
 export FORBIDDEN_WORD="supersecret-banned-token"
 ```
 
-Use a unique, non-natural-language token so the assertion in Step 4 is unambiguous. This tutorial uses `supersecret-banned-token`. Replace with whatever your policy actually wants to block.
+Use a unique, non-natural-language token so the blocked-traffic check is
+unambiguous. The commands use `supersecret-banned-token`; replace it with a
+token that matches your policy.
 
-## Create a guardrail
+### Create a Guardrail
 
 ```shell
 GUARDRAIL_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/guardrails \
@@ -50,9 +52,12 @@ GUARDRAIL_ID=$(curl -sS -X POST http://127.0.0.1:3001/admin/v1/guardrails \
 
 The `input` hook point checks the request before AISIX forwards it upstream.
 
-## Verify allowed traffic
+## Verify Guardrail Behavior
 
-Confirm the guardrail is not over-blocking. A clean prompt should reach the upstream as normal:
+### Verify Allowed Traffic
+
+Confirm that the guardrail allows unrelated prompts. A clean prompt should
+reach the upstream as normal:
 
 ```shell
 curl -sSi -X POST http://127.0.0.1:3000/v1/chat/completions \
@@ -64,11 +69,13 @@ curl -sSi -X POST http://127.0.0.1:3000/v1/chat/completions \
   }'
 ```
 
-Expected: `HTTP/1.1 200 OK` followed by an OpenAI-shaped chat-completions body.
+A successful response starts with `HTTP/1.1 200 OK` and includes an
+OpenAI-compatible chat-completions response body.
 
-## Verify blocked traffic
+### Verify Blocked Traffic
 
-Now send a request whose content includes the forbidden token. Admin writes propagate asynchronously, so poll until the input guardrail returns `422`:
+Now send a request whose content includes the forbidden token. Admin writes
+propagate asynchronously, so poll until the input guardrail returns `422`:
 
 ```shell
 for i in $(seq 1 20); do
@@ -91,7 +98,8 @@ for i in $(seq 1 20); do
 done
 ```
 
-Expected: `HTTP/1.1 422 Unprocessable Entity` with this body:
+A blocked response starts with `HTTP/1.1 422 Unprocessable Entity` and includes
+this body:
 
 ```json
 {
@@ -102,17 +110,20 @@ Expected: `HTTP/1.1 422 Unprocessable Entity` with this body:
 }
 ```
 
-The `message` field does not include the matched literal, rule name, or pattern. The upstream is not called when a request is blocked.
+The `message` field does not include the matched literal, rule name, or
+pattern. The upstream is not called when a request is blocked.
 
-## Delete the guardrail
+## Delete the Guardrail
 
 ```shell
 curl -sS -X DELETE "http://127.0.0.1:3001/admin/v1/guardrails/${GUARDRAIL_ID}" \
   -H "Authorization: Bearer ${AISIX_ADMIN_KEY}"
 ```
 
-## Next steps
+## Related Reading
 
-- [Guardrails](../configuration/guardrails.md) — full field reference, kinds, and hook-point semantics
-- [Errors and retries](../integration/errors-and-retries.md) — the `content_filter` envelope and where `422` fits in the gateway error taxonomy
-- [Headers and error codes](../reference/headers-and-error-codes.md) — full error code table
+For field details, guardrail kinds, and hook-point semantics, see
+[Guardrails](../configuration/guardrails.md). For the `content_filter` error
+envelope and status code behavior, see
+[Errors and retries](../integration/errors-and-retries.md) and
+[Headers and error codes](../reference/headers-and-error-codes.md).

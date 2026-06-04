@@ -2,6 +2,7 @@
 title: Models
 description: Configure direct models and virtual routing models in AISIX AI Gateway.
 sidebar_position: 33
+toc_max_heading_level: 2
 ---
 
 Models define the names that callers send to the gateway.
@@ -15,16 +16,19 @@ or weighted target selection behind one stable caller-facing name.
 
 ## Prerequisites
 
-This page assumes you have:
-
-- a running self-hosted gateway with the admin listener available
-- an admin key for `Authorization: Bearer YOUR_ADMIN_KEY`
-- a provider key id to use as `provider_key_id`
+Before starting, run a self-hosted gateway with the admin listener available,
+prepare an admin key for `Authorization: Bearer YOUR_ADMIN_KEY`, and create a
+provider key to use as `provider_key_id`.
 
 If you do not have a provider key yet, start with
-[Provider keys](provider-keys.md), then return to this page.
+[Provider keys](provider-keys.md), then continue with model configuration.
 
-## Direct model
+## Configure Models
+
+Create a direct model for one upstream target, or create a routing model when
+one caller-facing alias should select among multiple direct models.
+
+### Direct Model
 
 A direct model maps one gateway alias to one upstream model.
 
@@ -49,15 +53,15 @@ For a direct model, the gateway expects `display_name`, `provider`,
 | Field | Description |
 | --- | --- |
 | `display_name` | Caller-facing alias. Callers send this value as `model`, and the gateway echoes it as `response.model`. |
-| `provider` | Vendor label used for metrics, access logs, and endpoint-specific vendor gates. |
+| `provider` | Vendor label used for metrics, access logs, and endpoint-specific vendor checks. |
 | `model_name` | Upstream model id sent to the provider, such as `gpt-4o`, an Azure deployment name, or a Bedrock model id. |
 | `provider_key_id` | Provider key id that supplies the upstream credential, optional `api_base`, provider identity, and adapter family. |
 
 `provider` is an open label, not a closed enum. It must be lowercase, start
 with a letter or number, and use only letters, numbers, `.`, `_`, or `-`.
-The generated schema caps it at 64 characters.
+The maximum length is 64 characters.
 
-## Routing model
+### Routing Model
 
 A routing model is a virtual alias. It has a `routing` block instead of direct
 upstream fields.
@@ -92,7 +96,7 @@ targets should be direct models.
 | `round_robin` | Rotate the starting target per request for this routing alias. |
 | `weighted` | Choose the first target by weight, then fall forward in declaration order on retry. |
 
-`retries` controls how many extra attempts stay on the current target before
+`retries` controls how many extra attempts stay on the selected target before
 failover. `max_fallbacks` controls how many later targets may be attempted.
 When omitted, `retries` defaults to `0` and `max_fallbacks` allows all later
 targets. Set `max_fallbacks: 0` to disable fallback.
@@ -100,11 +104,11 @@ targets. Set `max_fallbacks: 0` to disable fallback.
 By default, upstream `429` responses are not retried. Set `retry_on_429: true`
 when rate-limit responses should participate in retry and failover.
 
-## Direct and routing shapes
+### Direct and Routing Examples
 
 Do not mix direct-model fields and routing fields in the same model.
 
-Use this shape for direct upstream targets:
+Direct upstream targets use direct model fields:
 
 ```json
 {
@@ -115,7 +119,7 @@ Use this shape for direct upstream targets:
 }
 ```
 
-Use this shape for virtual routing aliases:
+Virtual routing aliases use a `routing` block:
 
 ```json
 {
@@ -129,18 +133,20 @@ Use this shape for virtual routing aliases:
 }
 ```
 
-The generated JSON Schema and the admin OpenAPI document are the source of
-truth for the accepted request and response shape.
+The JSON Schema and the admin OpenAPI document define the accepted request and
+response format.
 
-## Timeout
+## Health and Timeout Controls
+
+### Timeout
 
 `timeout` is measured in milliseconds. Omit it or set it to `0` for no
 per-request timeout at the model layer.
 
-Timeouts are direct-model behavior. A routing model dispatches through the
-selected target model, so configure timeouts on the direct targets.
+Timeouts are direct-model behavior. A routing model uses the selected target
+model for the provider request, so configure timeouts on the direct targets.
 
-## Background model checks
+### Background Model Checks
 
 `background_model_check` probes a direct model outside the request path and
 marks the target `unhealthy` when probes fail.
@@ -176,10 +182,11 @@ If `ignore_statuses` is omitted, no statuses are ignored. `[408, 429]` is a
 common starting point when transient timeouts and rate limits should remain
 visible without immediately marking the model unhealthy.
 
-Runtime model status is exposed by `GET /admin/v1/models/status`. The generated
-admin API reference describes the route shape.
+Runtime model status is exposed by `GET /admin/v1/models/status`. The
+[Admin API reference](/ai-gateway/reference/admin-api) describes the route
+format.
 
-## Cooldown
+### Cooldown
 
 `cooldown` is the request-path complement to background checks. It temporarily
 excludes a direct model after failures observed on real traffic.
@@ -214,29 +221,33 @@ defaults shown above.
 | `trigger_on_transport` | `true` |
 
 Cooldown is independent of retry. For example, an upstream `429` can put a
-model into cooldown even when the current request is not retried.
+model into cooldown even when that request is not retried.
 
 When a target enters cooldown, routing models prefer other available targets.
 If every candidate is filtered, behavior is controlled by
 [`routing.on_all_filtered`](routing-and-failover.md#all-targets-filtered-policy).
 
-## Cost metadata
+## Metadata and Discovery
+
+### Cost Metadata
 
 `cost` stores pricing metadata for usage and budget workflows.
 
-The standalone proxy does not price requests at dispatch time and emits
+The standalone proxy does not price requests while handling traffic and emits
 `cost_usd=0.0`. Pricing-aware budget enforcement requires the AISIX Cloud
 control plane.
 
-## What `/v1/models` exposes
+### Model Discovery Endpoint
 
-`GET /v1/models` currently lists non-routing models.
+`GET /v1/models` lists non-routing models.
 
-Routing aliases are intentionally hidden from this discovery response today,
+Routing aliases are intentionally hidden from this discovery response,
 even though callers can target them directly on `/v1/chat/completions` if they
 know the alias.
 
-## Verify the model
+## Verify and Operate Models
+
+### Verify the Model
 
 After creating a direct model, check that the admin API returns it:
 
@@ -245,22 +256,22 @@ curl -sS http://127.0.0.1:3001/admin/v1/models \
   -H "Authorization: Bearer YOUR_ADMIN_KEY"
 ```
 
-Then check that the proxy snapshot has seen the model by listing models with a
-caller key that is allowed to use it:
+Then check that the proxy has loaded the model by listing models with a caller
+key that is allowed to use it:
 
 ```shell
 curl -sS http://127.0.0.1:3000/v1/models \
   -H "Authorization: Bearer YOUR_CALLER_KEY"
 ```
 
-If the admin API returns the model but the proxy does not, wait briefly and
-retry. Admin writes become visible through the watch-driven snapshot path.
+If the admin API returns the model but the proxy does not, use the propagation
+checks below before changing the resource.
 
-## Operational notes
+### Propagation and Status
 
-Admin writes become visible to the proxy asynchronously through the watch-driven
-snapshot path. After creating or updating a model, poll `/v1/models` with the
-caller key, or poll the target proxy endpoint, until the model resolves.
+Admin writes become visible to the proxy asynchronously. After creating or
+updating a model, poll `/v1/models` with the caller key, or poll the target
+proxy endpoint, until the model resolves.
 
 Duplicate `display_name` values are rejected with `409`.
 
@@ -269,25 +280,26 @@ Runtime routing exclusion is exposed by `GET /admin/v1/models/status`, not by
 
 ## Troubleshooting
 
-### Callers get `404` after a model is created
+### Callers Receive 404 After Model Creation
 
-Most often, the new model has not propagated into the current proxy snapshot
-yet. Wait briefly and retry, or check [Configuration propagation](configuration-propagation.md).
+Most often, the new model has not propagated to the proxy. Wait briefly and
+retry, or check [Configuration propagation](configuration-propagation.md).
 
-### A direct model exists but dispatch fails
+### Direct Model Exists but Dispatch Fails
 
 Check the referenced `provider_key_id`, the provider key's `api_base`, and the
 relationship between `display_name`, `model_name`, `provider`, and `adapter`.
 
-### A routing alias works but does not appear in `/v1/models`
+### Routing Alias Is Not Visible in Model List
 
-That is expected with the current discovery boundary. `/v1/models` is not a
-complete list of every valid caller target.
+`/v1/models` follows discovery rules and is not a complete list of every
+valid caller target.
 
-## Next steps
+## Related Reading
 
-- [Provider keys](provider-keys.md) explains upstream credentials and base URLs.
-- [API keys](api-keys.md) lets callers use model aliases.
-- [Routing and failover](routing-and-failover.md) covers virtual model behavior.
-- [Configuration propagation](configuration-propagation.md) explains when admin writes become visible to the proxy.
-- [Adapter protocol families](../reference/adapters.md) explains how provider keys select upstream bridges.
+For upstream credentials and base URLs, see [Provider keys](provider-keys.md).
+To allow callers to use model aliases, see [API keys](api-keys.md). For virtual
+aliases, see [Routing and failover](routing-and-failover.md). For propagation
+timing and adapter selection, see
+[Configuration propagation](configuration-propagation.md) and
+[Adapter protocol families](../reference/adapters.md).

@@ -12,63 +12,88 @@ keywords:
   - Azure OpenAI
 ---
 
-A provider upstream is the model service AISIX AI Gateway calls after it authenticates a caller, resolves the requested model alias, and selects a provider key.
+A provider upstream is the model service AISIX AI Gateway calls after it
+authenticates the caller and resolves the requested model alias.
 
-This guide helps you choose the right provider setup path and identify which values you need from the upstream platform before you add a new provider.
+Choose the upstream setup guide that matches the provider API format your
+gateway will call.
 
-## Choose the setup path
+## Choose a Setup Path
 
-Start from the upstream you operate or buy from.
+Choose the adapter that matches the upstream API format, not the provider's
+business category. DeepSeek and a vLLM server both use `adapter: "openai"`
+because AISIX sends them OpenAI-compatible chat-completions requests.
 
-| If your upstream is | Use this guide | Adapter |
-| --- | --- | --- |
-| A public OpenAI-compatible vendor such as DeepSeek, Groq, Mistral, Together.ai, Fireworks, or Perplexity | [OpenAI-compatible vendor upstream](upstream-openai-compat.md) | `openai` |
-| A private OpenAI-compatible server such as vLLM, SGLang, Ollama, or an internal model proxy | [Bring your own endpoint](../configuration/byo-endpoint.md) | `openai` |
-| AWS Bedrock Runtime | [AWS Bedrock upstream](upstream-bedrock.md) | `bedrock` |
-| Google Vertex AI | [Google Vertex AI upstream](upstream-vertex.md) | `vertex` |
-| Azure OpenAI Service | [Azure OpenAI upstream](upstream-azure-openai.md) | `azure-openai` |
+| Upstream API Format | Examples | Setup Guide | Adapter |
+| --- | --- | --- | --- |
+| Public OpenAI-compatible vendor | DeepSeek, Groq, Mistral, Together.ai, Fireworks, Perplexity | [OpenAI-Compatible Vendor Upstream](upstream-openai-compat.md) | `openai` |
+| Private OpenAI-compatible endpoint | vLLM, SGLang, Ollama, private model proxy | [Bring Your Own Endpoint](../configuration/byo-endpoint.md) | `openai` |
+| AWS Bedrock native API | Bedrock foundation models or inference profiles | [AWS Bedrock Upstream](upstream-bedrock.md) | `bedrock` |
+| Google Vertex AI native API | Vertex publisher models | [Google Vertex AI Upstream](upstream-vertex.md) | `vertex` |
+| Azure OpenAI API | Azure OpenAI deployments | [Azure OpenAI Upstream](upstream-azure-openai.md) | `azure-openai` |
 
-Choose the adapter that matches the upstream wire shape, not the provider's marketing category. For example, DeepSeek and a vLLM server both use `adapter: "openai"` because AISIX sends them OpenAI-compatible chat-completions requests.
+## Request Flow
 
-## What you configure
+A working model alias connects the caller API key, the model resource, and the
+provider key. The caller key authorizes the alias, the model maps the alias to
+the upstream model name, and the provider key supplies the credential and
+adapter used for the provider request.
 
-Every upstream setup creates the same three AISIX resources:
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant Gateway as AISIX AI Gateway
+    participant Upstream as Upstream provider
 
-1. A provider key that stores the upstream credential, provider label, adapter, and optional base URL.
-2. A model that maps the caller-facing alias to the upstream model or deployment id.
-3. A caller API key that allows clients to use the alias.
-
-The details differ by upstream family:
-
-- **OpenAI-compatible vendor** — `secret` is the provider API key, `model_name` is the vendor model id, and `api_base` is required for non-OpenAI vendors unless a built-in default applies.
-- **BYO OpenAI-compatible endpoint** — `secret` is the provider API key or a placeholder for an unauthenticated endpoint, `model_name` is the served model name or local model tag, and `api_base` is the endpoint root, including `/v1` when the server serves there.
-- **Bedrock** — `secret` is a JSON AWS credential with region, `model_name` is the Bedrock model id or inference profile id, and `api_base` is only needed for a private endpoint or VPC endpoint override.
-- **Vertex AI** — `secret` is a JSON GCP credential with project and region, `model_name` is the Vertex publisher model id, and `api_base` is only needed when routing through a proxy or private endpoint.
-- **Azure OpenAI** — `secret` is either the resource api-key string or a JSON Entra ID credential, `model_name` is the Azure deployment name, and `api_base` is the resource host, bare resource name, or override URL.
-
-## How a request uses the upstream
-
-```text
-client request -> caller API key -> model alias -> provider key -> adapter bridge -> upstream provider
+    Client->>Gateway: Request with caller key and model alias
+    Gateway->>Gateway: Authorize caller key for the alias
+    Gateway->>Gateway: Resolve alias to upstream model
+    Gateway->>Gateway: Load provider key credential and adapter
+    Gateway->>Upstream: Send provider request with upstream model
+    Upstream-->>Gateway: Provider response
+    Gateway-->>Client: Response with caller-facing alias
 ```
 
-The client sends the caller-facing alias in `model`. AISIX rewrites that value to the upstream `model_name` before dispatch and restores the alias in normalized chat responses.
+The client sends the caller-facing alias in `model`. AISIX rewrites that value
+to the upstream `model_name` before the provider request and restores the alias
+in normalized chat responses.
 
-## Before exposing an alias
+Each upstream family needs a credential, an upstream model value, and sometimes
+a base URL. OpenAI-compatible vendors use a provider API key and vendor model
+ID; non-OpenAI vendors need `api_base` unless a built-in default applies. BYO
+OpenAI-compatible endpoints use a provider key credential, the served model name
+or local tag, and the endpoint root, including `/v1` when the server serves
+there.
 
-Check these items before giving the caller key to an application team:
+Bedrock uses a JSON AWS credential with region and a Bedrock model ID or
+inference profile ID. Vertex AI uses a JSON GCP credential with project and
+region and a Vertex publisher model ID. Azure OpenAI uses either a resource
+API-key string or JSON Entra ID credential and routes by Azure deployment name.
+For Bedrock and Vertex, set `api_base` only for private or proxy endpoints; for
+Azure, use the resource host, bare resource name, or override URL.
 
-- The caller key's `allowed_models` includes the alias.
-- `/v1/models` shows the alias for that caller key after configuration propagation.
-- A test request returns `response.model` as the alias, not the upstream model id.
-- The upstream platform's logs, metrics, or error responses show that the request reached the expected provider.
-- The endpoint you plan to use is supported by that provider family. See [Provider compatibility](../reference/provider-compatibility.md).
+## Alias Readiness Check
 
-## Next steps
+Before giving the caller key to an application team, confirm that
+`allowed_models` includes the alias and that `/v1/models` shows the alias for
+that caller key after configuration propagation.
 
-- [OpenAI-compatible vendor upstream](upstream-openai-compat.md)
-- [Bring your own endpoint](../configuration/byo-endpoint.md)
-- [AWS Bedrock upstream](upstream-bedrock.md)
-- [Google Vertex AI upstream](upstream-vertex.md)
-- [Azure OpenAI upstream](upstream-azure-openai.md)
-- [Adapter protocol families](../reference/adapters.md)
+Send a test request through the proxy and check that `response.model` contains
+the caller-facing alias, not the upstream model ID. If your provider exposes
+logs, metrics, request IDs, or usage records, use them to confirm that the
+request reached the intended upstream account and model.
+
+Finally, confirm that the endpoint is supported by the selected provider
+family. See [Provider Compatibility](../reference/provider-compatibility.md).
+
+## Related Reading
+
+Configure provider-specific upstreams with
+[OpenAI-Compatible Vendor Upstream](upstream-openai-compat.md),
+[Bring Your Own Endpoint](../configuration/byo-endpoint.md),
+[AWS Bedrock Upstream](upstream-bedrock.md),
+[Google Vertex AI Upstream](upstream-vertex.md), and
+[Azure OpenAI Upstream](upstream-azure-openai.md). To compare adapter families
+and upstream request behavior, see
+[Adapter Protocol Families](../reference/adapters.md).

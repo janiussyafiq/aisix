@@ -1,65 +1,76 @@
 ---
-title: Client APIs Overview
+title: Client API Overview
 sidebar_label: Overview
-description: Choose the right caller-facing API surface for AISIX AI Gateway clients.
+description: Choose the caller-facing API for AISIX AI Gateway clients.
 sidebar_position: 19
 ---
 
-AISIX AI Gateway gives applications a caller-facing API contract while the
+AISIX AI Gateway gives applications a stable caller-facing API while the
 gateway owns provider credentials, model resolution, routing, and policy.
 
-This section builds on the [Quickstart](../quickstart) after it proves
-that the gateway can serve a request. Start by choosing the client API shape
-your application already speaks, then move to endpoint-specific details only
-when you need them.
+After the [Quickstart](../quickstart) confirms that the gateway can serve a
+request, choose the client API format your application already speaks. These
+integration docs explain gateway behavior around existing API formats; use the
+provider API reference for the full provider request and response contract.
 
-## Start with the client surface you already have
+## Choose a Client API
 
-| If your client speaks | Start with | Use it when |
-| --- | --- | --- |
-| OpenAI-compatible chat or model discovery | [OpenAI-compatible API](openai-compatible-api.md) | Existing OpenAI SDKs or HTTP clients should point at AISIX with minimal change. |
-| Anthropic Messages | [Anthropic-style Messages API](anthropic-messages.md) | Existing Anthropic SDK clients should use `/v1/messages` or token counting. |
-| OpenAI-style specialized endpoints | Endpoint-specific pages for [embeddings](embeddings.md), [responses](responses.md), [audio](audio.md), [images](images.md), and [rerank](rerank.md) | Your application needs a narrower API family with provider-specific support boundaries. |
-| Provider-native APIs | [Provider passthrough](passthrough.md) | AISIX should authenticate, resolve the provider key, and forward a route that is not modeled directly. |
+If your application already uses OpenAI SDKs or OpenAI-compatible HTTP clients,
+start with the [OpenAI-compatible API](openai-compatible-api.md). In most cases
+the application changes the base URL, caller key, and model alias while keeping
+the same request format.
+
+If your application is Anthropic-native, use the
+[Anthropic-style Messages API](anthropic-messages.md) so the caller can keep
+`/v1/messages` requests and token-counting behavior.
+
+For OpenAI-style endpoint families, use the endpoint-specific pages
+for [embeddings](embeddings.md), [responses](responses.md), [audio](audio.md),
+[images](images.md), and [rerank](rerank.md). Provider support can differ by
+endpoint family.
+
+For provider routes that are not modeled directly, use
+[Provider passthrough](passthrough.md). AISIX authenticates the caller, resolves
+the provider key, and forwards the provider-native route.
 
 The client sends a gateway-issued caller key and a caller-visible model alias.
 AISIX resolves the provider key and upstream model behind that alias before it
 forwards the request.
 
-## What stays stable for callers
+## Stable Caller Behavior
 
-- Applications use AISIX as the API base URL.
-- Applications send caller API keys, not upstream provider credentials.
-- Applications use model aliases such as `gpt-4o-prod`, not necessarily the
-  provider's model or deployment id.
-- Gateway-generated errors follow the API surface the caller used.
+Applications use AISIX as the API base URL and send gateway-issued caller API
+keys instead of upstream provider credentials. The `model` value is a
+caller-visible alias, such as `gpt-4o-prod`, and does not need to match the
+provider's model or deployment ID.
 
-## What differs by surface
+Gateway-generated errors follow the API family the caller used.
+OpenAI-compatible routes return OpenAI-compatible errors, while
+Anthropic-style routes return Anthropic-style errors.
 
-| Surface | Auth header | Error shape | Good first check |
-| --- | --- | --- | --- |
-| OpenAI-compatible routes | `Authorization: Bearer YOUR_CALLER_API_KEY` | `{"error": {...}}` | `POST /v1/chat/completions` |
-| Anthropic-style routes | `x-api-key: YOUR_CALLER_API_KEY` for Anthropic SDKs; bearer auth is also accepted by AISIX | `{"type":"error","error": {...}}` | `POST /v1/messages` |
-| Provider passthrough | Gateway caller auth, then provider auth injected by AISIX | Upstream provider status and body | A provider route under `/passthrough/:provider/*rest` |
+## Authentication and Error Formats
 
-For exact mounted routes, current headers, and error boundaries, use
+OpenAI-compatible routes use `Authorization: Bearer YOUR_CALLER_API_KEY` and
+return `{"error": {...}}` for gateway-generated failures. Start with
+`POST /v1/chat/completions` when checking this path.
+
+Anthropic-style routes support `x-api-key: YOUR_CALLER_API_KEY` for Anthropic
+SDKs. AISIX also accepts bearer auth on this path. Gateway-generated failures
+return `{"type":"error","error": {...}}`, and the first route to check is
+`POST /v1/messages`.
+
+Provider passthrough still authenticates the caller at the gateway, then AISIX
+injects the provider credential before forwarding. After provider resolution,
+the caller receives the upstream provider status and body.
+
+For route coverage, headers, and error handling, use
 [Proxy API reference](../reference/proxy-api-reference.md) and
 [Headers and error codes](../reference/headers-and-error-codes.md).
 
-## Recommended reading order
+## Related Reading
 
-1. Start with [OpenAI-compatible API](openai-compatible-api.md) unless your
-   application is already Anthropic-native.
-2. Read [Streaming](streaming.md) and [Tool calling](tool-calling.md) if your
-   chat workload depends on those behaviors.
-3. Move to endpoint-specific pages when you need embeddings, responses, audio,
-   images, rerank, or passthrough.
-4. Read [Errors and retries](errors-and-retries.md) before putting a client in
-   production.
-
-## Next steps
-
-- [OpenAI-compatible API](openai-compatible-api.md)
-- [Anthropic-style Messages API](anthropic-messages.md)
-- [Errors and retries](errors-and-retries.md)
-- [Provider compatibility](../reference/provider-compatibility.md)
+Most clients should start with the [OpenAI-compatible API](openai-compatible-api.md)
+unless the application is already Anthropic-native. For chat behavior, also
+review [Streaming](streaming.md), [Tool calling](tool-calling.md), and
+[Errors and retries](errors-and-retries.md). For provider and endpoint
+support, see [Provider compatibility](../reference/provider-compatibility.md).

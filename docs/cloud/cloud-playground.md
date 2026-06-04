@@ -2,67 +2,46 @@
 title: Cloud Playground
 description: Understand AISIX Cloud playground behavior and its limitations relative to the managed data plane.
 sidebar_position: 74
+toc_max_heading_level: 2
 ---
 
-The AISIX Cloud playground is a preview surface for trying a model or
-checking early configuration. It is not a production-path simulator.
+The AISIX Cloud playground lets you try a model from the control plane
+while you are setting up Cloud resources. It is useful for early feedback,
+but it does not simulate the full production request path.
 
-Use the playground for quick feedback while setting up resources. Use
-live requests through the managed data plane when you need to validate
+Use live requests through the managed data plane when you need to validate
 routing, cache, guardrails, rate limits, budgets, or observability.
 
-## How the playground differs
+## Playground and Live Traffic Paths
 
-The current playground path sends the request from the control plane to
-the upstream provider. It does not exercise the managed data plane's:
+Playground requests run from the control plane to the upstream provider. They
+do not exercise managed data-plane behavior such as model routing, response
+caching, guardrail execution, rate-limit enforcement, budget enforcement, or
+data-plane observability.
 
-- model routing path
-- response cache
-- guardrail execution
-- rate-limit enforcement
-- budget enforcement on live data-plane traffic
-- data-plane access logs and metrics path
+That difference matters when a playground request succeeds but a live managed
+request behaves differently.
 
-That boundary matters when a playground request succeeds but the live
-managed request behaves differently.
-
-## When to use the playground
-
-Use it for:
-
-- quick model-selection checks
-- early provider credential validation
-- exploratory prompts from the Cloud UI
-- confirming that a basic provider call can succeed
-
-## When to use live data-plane traffic
-
-Use the managed data plane for:
-
-- validating caller API keys
-- validating model aliases and routing rules
-- validating cache behavior
-- validating guardrails
-- validating budgets and rate limits
-- checking the actual request logs and metrics path
+The playground is appropriate for model-selection checks, early provider
+credential validation, exploratory prompts from the Cloud UI, and basic
+provider-call confirmation. The managed data plane is the right place to
+validate caller API keys, model aliases, routing rules, cache behavior,
+guardrails, budgets, rate limits, logs, and metrics.
 
 ## Troubleshooting
 
-### The playground succeeds but real managed traffic behaves differently
+### The Playground Succeeds but Managed Traffic Behaves Differently
 
-Treat the playground result as a provider/configuration preview, then
-check the live data-plane path:
+Treat the playground result as an early provider and configuration check, then
+verify the live data-plane path. Confirm the resource belongs to the
+environment served by the data plane, the saved resource reached the managed
+data plane, the request uses the managed data-plane endpoint, and data-plane
+logs, metrics, and gateway response headers match the live request.
 
-1. Confirm the resource belongs to the right environment.
-2. Confirm projection reached the data plane.
-3. Send the request through the managed data-plane endpoint.
-4. Check data-plane logs, metrics, and gateway response headers.
+## Related Reading
 
-## Next steps
-
-- [Resource projection](/ai-gateway/cloud/resource-projection) explains
-  how saved Cloud state reaches live traffic.
-- [Metrics and logs](/ai-gateway/operations/metrics-and-logs) explains
-  live data-plane observability.
-- [Feature Status](/ai-gateway/overview/feature-matrix) shows the current
-  support boundary for Cloud features.
+For how saved Cloud state reaches live traffic, see
+[Resource projection](/ai-gateway/cloud/resource-projection). For live
+data-plane observability and production readiness, see
+[Metrics and logs](/ai-gateway/operations/metrics-and-logs) and
+[Feature availability](/ai-gateway/overview/feature-matrix).

@@ -6,7 +6,7 @@
 //! Failures may retry the current target and then fall back to later
 //! targets.
 //!
-//! Three strategies (spec §3):
+//! Three strategies (spec section 3):
 //! - `round_robin`: cycle through targets in declaration order.
 //! - `weighted`: pick a target with probability proportional to its
 //!   `weight`; falls back to round-robin when weights are missing.
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 pub enum RoutingStrategy {
     RoundRobin,
     Weighted,
-    /// Failover is the safest default — predictable order, no shared
+    /// Failover is the safest default: predictable order, no shared
     /// state, no surprises on first deploy.
     #[default]
     Failover,
@@ -62,7 +62,7 @@ impl RoutingTarget {
 /// runtime status layer (all in cooldown or background-unhealthy).
 ///
 /// `Fail` is the default because sending traffic to a target we know
-/// is currently bad — just because every other target is also bad —
+/// is currently bad, just because every other target is also bad,
 /// amplifies cascading outages. Operators that prefer the legacy
 /// behavior (try every candidate regardless of known state) can opt
 /// into `OriginalOrder` per routing model.
@@ -71,7 +71,7 @@ impl RoutingTarget {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum OnAllFilteredPolicy {
-    /// Return 503 with a fixed Retry-After hint (currently 30 seconds —
+    /// Return 503 with a fixed Retry-After hint (currently 30 seconds;
     /// see `FALLBACK_ALL_UNHEALTHY_RETRY_AFTER` in
     /// `crates/aisix-proxy/src/chat.rs`). Default.
     ///

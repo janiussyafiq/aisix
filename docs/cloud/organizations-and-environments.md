@@ -12,7 +12,7 @@ operation.
 An organization owns Cloud resources. An environment defines the managed
 deployment scope that receives projected gateway configuration.
 
-## Start by thinking about scope
+## Environment Scope
 
 An organization answers ownership: which tenant, account, or platform
 team owns the Cloud resources.
@@ -24,32 +24,28 @@ For most traffic and troubleshooting work, the environment is the most
 important unit. Models, provider keys, API keys, and policies must belong
 to the environment that the target managed data plane serves.
 
-## What changes from self-hosted mode
+## Managed Mode Differences
 
-In self-hosted mode, operators usually reason about one gateway runtime
-and its etcd-backed configuration. In Cloud mode, operators reason about
-environment-scoped resources that are projected into one or more managed
-data planes.
+In self-hosted mode, teams usually reason about one gateway runtime and its
+etcd-backed configuration. In Cloud mode, teams reason about
+environment-scoped resources that are projected into one or more managed data
+planes.
 
-That changes the first troubleshooting question. Instead of only asking
-"does this resource exist?", also ask "does this resource exist in the
-environment served by this data plane?"
+That changes the first troubleshooting check. Confirm that the resource exists,
+then confirm that it belongs to the environment served by the target data plane.
 
-## Common checks
+## Common Checks
 
-When a resource does not appear to affect live traffic:
+When a resource does not appear to affect live traffic, confirm the resource
+belongs to the expected environment, the managed data plane is attached to that
+environment, projection status and data-plane health are current, and the
+request goes through the managed data plane rather than only through a Cloud UI
+check.
 
-1. Confirm the resource belongs to the expected environment.
-2. Confirm the managed data plane is attached to that environment.
-3. Check projection status and data-plane health.
-4. Send a live request through the managed data plane, not only through a
-   Cloud preview surface.
+## Related Reading
 
-## Next steps
-
-- [Resource projection](/ai-gateway/cloud/resource-projection) explains
-  how environment resources reach the data plane.
-- [Gateway certificates and managed data plane](/ai-gateway/cloud/gateway-certificates-and-managed-dp)
-  explains how a managed data plane joins Cloud.
-- [Cloud vs. self-hosted](/ai-gateway/cloud/cloud-vs-self-hosted)
-  compares the operating models.
+For how environment resources reach the data plane, see
+[Resource projection](/ai-gateway/cloud/resource-projection). For managed
+bootstrap and operating-model differences, see
+[Gateway certificates and managed data plane](/ai-gateway/cloud/gateway-certificates-and-managed-dp)
+and [Cloud vs. self-hosted](/ai-gateway/cloud/cloud-vs-self-hosted).

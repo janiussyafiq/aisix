@@ -2,83 +2,86 @@
 title: Audio APIs
 description: Learn how AISIX AI Gateway handles OpenAI-style audio transcription, translation, and speech endpoints.
 sidebar_position: 27
+toc_max_heading_level: 2
 ---
 
-AISIX AI Gateway exposes three OpenAI-style audio endpoints:
+AISIX AI Gateway exposes OpenAI-style audio routes for transcription,
+translation, and speech generation.
 
-- `POST /v1/audio/transcriptions`
-- `POST /v1/audio/translations`
-- `POST /v1/audio/speech`
+Use these endpoints when audio clients should keep OpenAI request formats while
+AISIX manages caller authentication, model aliases, and upstream credentials.
 
-Use these endpoints when you want audio-related OpenAI request shapes at the gateway edge.
+## Audio Request Flow
 
-## Request shapes
+Transcription and translation requests use `multipart/form-data`. Speech
+requests use JSON.
 
-The current request contracts are:
+For multipart requests, the gateway resolves the AISIX model alias and rebuilds
+the multipart form with the upstream model id before forwarding. It preserves
+the other form fields, including file name and content type when present.
 
-- transcriptions: `multipart/form-data`
-- translations: `multipart/form-data`
-- speech: JSON
+For transcription and translation, the client still sends the AISIX alias,
+while the upstream receives the provider model id.
 
-For multipart requests, the gateway resolves the AISIX model alias and rebuilds the multipart form with the upstream model id before forwarding. It preserves the other form fields, including file name and content type when present.
+The gateway relays the upstream response body and response content type.
+Transcription and translation responses are JSON results. Speech responses are
+binary audio bytes.
 
-That is the important gateway-specific behavior for transcription and translation: the client still sends the AISIX alias, but the upstream receives the provider model id.
-
-## Response behavior
-
-The gateway relays the upstream response body and response content type:
-
-- JSON for transcription and translation results
-- binary audio bytes for speech output
-
-Your client should therefore handle the response based on the endpoint family, not just on the fact that everything goes through the gateway. Do not rely on AISIX to normalize audio responses into a chat-style JSON body.
-
-## Authentication and authorization
+Your client should handle the response based on the endpoint family, not only on
+the fact that the request goes through the gateway. Do not rely on AISIX to
+normalize audio responses into a chat-style JSON body.
 
 These endpoints follow the same proxy rules as other client-facing routes:
+caller API key authentication, model alias resolution, and `allowed_models`
+enforcement.
 
-- caller API key authentication
-- model alias resolution
-- `allowed_models` enforcement
+## Provider Support
 
-## Current provider boundary
+Audio requests are forwarded to the resolved provider key's `api_base` with the
+AISIX model alias rewritten to the upstream model id.
 
-Audio requests are forwarded to the resolved provider key's `api_base` with the AISIX model alias rewritten to the upstream model id.
+The gateway does not translate audio request or response formats across provider
+families. Use these endpoints with upstreams that expose the same OpenAI-style
+audio routes: `/v1/audio/transcriptions`, `/v1/audio/translations`, and
+`/v1/audio/speech`.
 
-The gateway does not translate audio request or response shapes across provider families. Use these endpoints with upstreams that expose the same OpenAI-style audio routes:
+If a provider does not expose the requested audio route, the failure is an
+upstream capability or base-URL issue, not a caller-auth issue.
 
-- `/v1/audio/transcriptions`
-- `/v1/audio/translations`
-- `/v1/audio/speech`
+Successful audio requests are attributed in gateway usage events. Token counts
+are populated only when the upstream response includes a recognized `usage`
+block; speech output and duration-based audio costs are not inferred from the
+binary response.
 
-If a provider does not expose the requested audio route, the failure is an upstream capability or base-URL issue, not a caller-auth issue.
+## Choose an Audio Endpoint
 
-Successful audio requests are attributed in gateway usage events. Token counts are populated only when the upstream response includes a recognized `usage` block; speech output and duration-based audio costs are not inferred from the binary response.
-
-## When to use these endpoints
-
-- transcriptions for speech-to-text
-- translations for speech-to-text with translation semantics
-- speech for text-to-audio output
+Use transcriptions for speech-to-text, translations for speech-to-text with
+translation semantics, and speech for text-to-audio output.
 
 ## Troubleshooting
 
-### Multipart requests fail with `400`
+### Multipart Request Returns `400`
 
-Check form construction first, especially file upload fields and the presence of `model`.
+Check form construction first. Confirm the file upload fields and the
+presence of `model`.
 
-### Speech output is not JSON
+### Speech Output Is Not JSON
 
-That is expected. `/v1/audio/speech` returns upstream audio bytes rather than a chat-style JSON body.
+`/v1/audio/speech` returns upstream audio bytes rather than a chat-style JSON
+body. Handle the response as binary output.
 
-### The request returns an upstream `404`
+### The Request Returns an Upstream `404`
 
-Check whether the resolved provider exposes the requested OpenAI-style audio route and whether `api_base` points to the route root the gateway should append `/v1/audio/...` to.
+Check whether the resolved provider exposes the requested OpenAI-style audio
+route and whether `api_base` points to the route root the gateway should append
+`/v1/audio/...` to.
 
-## Next steps
+## Related Reading
 
-- [OpenAI-compatible API](openai-compatible-api.md)
-- [Provider keys](../configuration/provider-keys.md)
-- [Provider compatibility](../reference/provider-compatibility.md)
-- [Errors and retries](errors-and-retries.md)
-- [Proxy API reference](../reference/proxy-api-reference.md)
+[OpenAI-compatible API](openai-compatible-api.md) covers OpenAI-style gateway
+routes. Configure upstream credentials and base URLs with
+[Provider keys](../configuration/provider-keys.md), and check
+[Provider compatibility](../reference/provider-compatibility.md) before
+depending on an audio route. For proxy errors and gateway behavior, see
+[Errors and retries](errors-and-retries.md) and
+[Proxy API reference](../reference/proxy-api-reference.md).

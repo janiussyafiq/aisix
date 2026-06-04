@@ -5,56 +5,46 @@ description: Choose the right operations guide for deploying, securing, observin
 sidebar_position: 49
 ---
 
-Use the operations section when AISIX AI Gateway is moving from a local
-quickstart into a real environment. These pages focus on the running data
-plane: how it starts, what surfaces to expose, how to verify traffic, and
-how to diagnose production failures.
+When AISIX AI Gateway moves from a local quickstart into a real environment,
+focus on the running data plane: how it starts, which listeners to expose, how
+to verify traffic, and how to diagnose failures in production-like deployments.
 
 If you are still creating provider keys, models, caller keys, or runtime
 policies, start with [Configuration overview](../configuration/overview.md)
 first.
 
-## Start with the right guide
+## Deployment Path
 
-| What you need to do | Start with | What it answers |
-| --- | --- | --- |
-| Roll out a gateway for real traffic | [Production deployment](production-deployment.md) | What must be true before the proxy handles production AI requests. |
-| Set network and credential boundaries | [Network and security](network-and-security.md) | Which listeners, stores, and secrets belong on private networks. |
-| Configure encrypted transport | [TLS and mTLS](tls-and-mtls.md) | Where listener TLS, etcd TLS, and managed data-plane mTLS apply. |
-| Probe runtime health | [Health checks](health-checks.md) | Which liveness, admin-health, and model-health endpoints to use. |
-| Observe traffic and usage | [Metrics and logs](metrics-and-logs.md) | Which metrics, logs, headers, usage events, and exporters explain runtime behavior. |
-| Prove a deployment works | [Testing and verification](testing-and-verification.md) | How to verify the full caller-to-provider path, not only process startup. |
-| Diagnose a failure | [Troubleshooting](troubleshooting.md) | How to narrow a symptom to startup, propagation, access, policy, upstream, or managed connectivity. |
-| Upgrade safely | [Upgrades and compatibility](upgrades-and-compatibility.md) | What to verify before widening traffic to a new version. |
+Start with [Production deployment](production-deployment.md) when the gateway is
+moving toward real traffic. It sets the baseline for bootstrap configuration,
+listeners, etcd, cache, and the first production checks.
 
-## Recommended reading order
+Before exposing the proxy, use
+[Network and security](network-and-security.md) and
+[TLS and mTLS](tls-and-mtls.md) to set listener placement, credential
+handling, and encrypted transport.
 
-For a first production-minded rollout, read in this order:
+After the runtime is deployed, verify the caller-to-provider path with
+[Health checks](health-checks.md), [Metrics and logs](metrics-and-logs.md),
+and [Testing and verification](testing-and-verification.md). If a running
+deployment does not behave as expected, continue with
+[Troubleshooting](troubleshooting.md). Before widening traffic to a new
+version, review [Upgrades and compatibility](upgrades-and-compatibility.md).
 
-1. [Production deployment](production-deployment.md)
-2. [Network and security](network-and-security.md)
-3. [Health checks](health-checks.md)
-4. [Metrics and logs](metrics-and-logs.md)
-5. [Testing and verification](testing-and-verification.md)
-6. [Troubleshooting](troubleshooting.md)
+## Standalone and Managed Differences
 
-This path starts with deployment shape and boundaries, then adds the signals
-operators need to prove and debug the live request path.
-
-## Standalone and managed differences
-
-Standalone gateways expose a local admin listener when configured. Use that
-listener for admin health, metrics, OpenAPI, and dynamic-resource management,
-and keep it on a private operator network.
+Standalone gateways expose a local admin listener when configured. Use it for
+admin health, metrics, OpenAPI, and dynamic-resource management, and keep it on
+a private admin network.
 
 Managed data planes receive projected resources from AISIX Cloud and use the
 managed mTLS path instead of the standalone admin API. For managed operation,
-pair this section with [AISIX Cloud overview](../cloud/overview.md) and
+pair these runtime checks with [AISIX Cloud overview](../cloud/overview.md) and
 [Gateway certificates and managed data plane](../cloud/gateway-certificates-and-managed-dp.md).
 
-## Next steps
+## Related Reading
 
-- [Production deployment](production-deployment.md)
-- [Network and security](network-and-security.md)
-- [Testing and verification](testing-and-verification.md)
-- [Troubleshooting](troubleshooting.md)
+For the first production rollout, see
+[Production deployment](production-deployment.md). For end-to-end validation,
+see [Testing and verification](testing-and-verification.md). For symptoms that
+appear after deployment, see [Troubleshooting](troubleshooting.md).
