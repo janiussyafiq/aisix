@@ -615,6 +615,10 @@ fn observability_exporter_schema() -> Value {
             "project":        { "type": "string", "minLength": 1 },
             "logstore":       { "type": "string", "minLength": 1 },
             "credential_ref": { "type": "string", "minLength": 1 },
+            // Content capture (opt-in). `full` writes captured prompt /
+            // response into the logstore; `content_max_bytes` truncates each.
+            "content_mode":      { "type": "string", "enum": ["metadata_only", "full"] },
+            "content_max_bytes": { "type": "integer", "minimum": 1 },
             // object_store fields (S3 / GCS / Azure Blob, one variant). Cloud
             // credentials are NEVER here — only the shared `credential_ref`.
             "provider":    { "type": "string", "enum": ["s3", "gcs", "azure_blob"] },
@@ -1492,6 +1496,36 @@ mod tests {
             "access_key_secret": "AKIASECRET"
         });
         assert!(validate_observability_exporter(&v).is_err());
+    }
+
+    #[test]
+    fn exporter_aliyun_sls_content_capture_fields() {
+        let base = |extra: serde_json::Value| {
+            let mut v = json!({
+                "name": "x",
+                "kind": "aliyun_sls",
+                "endpoint": "ap-southeast-3.log.aliyuncs.com",
+                "project": "p",
+                "logstore": "l",
+                "credential_ref": "r"
+            });
+            let obj = v.as_object_mut().unwrap();
+            for (k, val) in extra.as_object().unwrap() {
+                obj.insert(k.clone(), val.clone());
+            }
+            v
+        };
+        // Opt-in content capture validates.
+        validate_observability_exporter(&base(
+            json!({ "content_mode": "full", "content_max_bytes": 4096 }),
+        ))
+        .unwrap();
+        // Unknown content_mode is rejected.
+        assert!(
+            validate_observability_exporter(&base(json!({ "content_mode": "verbose" }))).is_err()
+        );
+        // content_max_bytes must be a positive integer.
+        assert!(validate_observability_exporter(&base(json!({ "content_max_bytes": 0 }))).is_err());
     }
 
     #[test]

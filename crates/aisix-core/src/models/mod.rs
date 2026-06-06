@@ -40,7 +40,7 @@ pub use model::{
 };
 pub use observability_exporter::{
     AliyunSlsConfig, ExporterKind, ObjectStoreCompression, ObjectStoreConfig, ObjectStoreProvider,
-    ObservabilityExporter, OtlpHttpConfig,
+    ObservabilityExporter, OtlpHttpConfig, SlsContentMode,
 };
 pub use provider_key::{
     ParamConstraints, ProviderKey, RequestOverrides, ResponseOverrides, StreamDoneMarker,

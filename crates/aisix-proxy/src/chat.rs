@@ -21,8 +21,8 @@ use aisix_core::AppliedGuardrail;
 use aisix_gateway::{BridgeContext, BridgeError, ChatFormat};
 use aisix_guardrails::GuardrailVerdict;
 use aisix_obs::{
-    AccessLog, LlmUsage, Metrics, RequestLabels, RequestOutcome, RoutingAttemptEvent, UsageEvent,
-    UsageLabels,
+    content_capture_cap, AccessLog, CapturedContent, LlmUsage, Metrics, RequestLabels,
+    RequestOutcome, RoutingAttemptEvent, UsageEvent, UsageLabels,
 };
 use axum::extract::State;
 use axum::http::HeaderValue;
@@ -244,6 +244,7 @@ pub async fn chat_completions(
                     success.cost_usd,
                     /* guardrail_blocked */ false,
                     &client,
+                    success.captured_content.take(),
                 );
             }
             // Inject x-ratelimit-* headers so OpenAI SDK clients see the
@@ -403,6 +404,7 @@ pub async fn chat_completions(
                 /* cost_usd */ 0.0,
                 guardrail_blocked,
                 &client,
+                /* content */ None,
             );
             err.into_response()
         }
@@ -488,6 +490,12 @@ struct Success {
     /// the routing group's display name.
     served_by_target: Option<String>,
     routing: RoutingTelemetry,
+    /// Captured request/response content for the observability fan-out, built
+    /// (gated on the snapshot's content-capturing exporters) where the request
+    /// and upstream response are both in scope. `None` when no exporter
+    /// captures content, and on the streaming path (filled at stream end). It
+    /// is forwarded only to `fan_out`, never to the CP telemetry sink.
+    captured_content: Option<CapturedContent>,
 }
 
 /// Cache decision attached to every successful request. Wire shape
@@ -653,6 +661,16 @@ async fn dispatch(
     }
 
     let snapshot = state.snapshot.load();
+    // Largest content cap any enabled content-capturing exporter wants, or
+    // `None` when none do — computed once so each response path (cache hit /
+    // upstream) only captures when an exporter actually consumes it.
+    let content_cap = content_capture_cap(
+        snapshot
+            .observability_exporters
+            .entries()
+            .iter()
+            .map(|e| &e.value),
+    );
     let virtual_entry = snapshot.models.get_by_name(&req.model).ok_or_else(|| {
         DispatchFailure::new(None, None, ProxyError::ModelNotFound(req.model.clone()))
     })?;
@@ -902,12 +920,18 @@ async fn dispatch(
                 model_name: req.model.clone(),
             })
         };
+        // Capture the prompt for content-capturing exporters; the response is
+        // assembled inside the stream into `comp.response_text`. Both gated on
+        // `content_cap` (None on the common content-free path).
+        let captured_prompt_for_telem =
+            content_cap.map(|_| serde_json::to_string(req).unwrap_or_default());
         let sse_stream = build_sse_stream(
             upstream,
             now,
             stream_guardrail,
             started,
             req.model.clone(),
+            content_cap,
             move |comp: StreamCompletion| {
                 // Rate-limit accounting (TPM cap) for all layers.
                 for key in &post_stream_keys {
@@ -962,6 +986,16 @@ async fn dispatch(
                     /* cost_usd */ 0.0,
                     comp.guardrail_blocked,
                     &client_for_telem,
+                    // Prompt captured up front, response assembled across the
+                    // stream into `comp.response_text`; both gated on the cap.
+                    match (&captured_prompt_for_telem, content_cap) {
+                        (Some(prompt), Some(cap)) => Some(CapturedContent::new(
+                            prompt,
+                            &comp.response_text,
+                            cap as usize,
+                        )),
+                        _ => None,
+                    },
                 );
                 metrics_for_stream.record_llm_usage(
                     UsageLabels {
@@ -1044,6 +1078,8 @@ async fn dispatch(
                 Some(model.display_name.clone()),
             ),
             routing: stream_routing,
+            // Streaming content capture lands in C3b.
+            captured_content: None,
         });
     }
 
@@ -1156,6 +1192,16 @@ async fn dispatch(
                     .upstream_model()
                     .unwrap_or("unknown")
                     .to_string();
+                // Capture the prompt + cached response for content-capturing
+                // exporters (gated). A cache hit still served content to the
+                // caller, so it's logged like a fresh response.
+                let captured_content = content_cap.map(|cap| {
+                    CapturedContent::new(
+                        &serde_json::to_string(req).unwrap_or_default(),
+                        cached.message.content.as_deref().unwrap_or(""),
+                        cap as usize,
+                    )
+                });
                 let mut response = Json(render_response(now, cached, &req.model)).into_response();
                 response
                     .headers_mut()
@@ -1200,6 +1246,7 @@ async fn dispatch(
                     // `served_by_target` field docs on `Success`.
                     served_by_target: None,
                     routing: RoutingTelemetry::default(),
+                    captured_content,
                 });
             }
             Ok(None) => {}
@@ -1468,6 +1515,18 @@ async fn dispatch(
         }
     }
 
+    // Capture request/response content for the observability fan-out (gated:
+    // `content_cap` is `None` when no exporter wants it). Built here, where both
+    // the request and the upstream response text are in scope; threaded to
+    // `fan_out` via `Success`, never to the CP sink.
+    let captured_content = content_cap.map(|cap| {
+        CapturedContent::new(
+            &serde_json::to_string(req).unwrap_or_default(),
+            upstream.message.content.as_deref().unwrap_or(""),
+            cap as usize,
+        )
+    });
+
     let mut response = Json(render_response(now, upstream, &req.model)).into_response();
     if matches!(cache_status, CacheStatus::Miss) {
         // Miss header only when the cache was actually consulted —
@@ -1513,6 +1572,7 @@ async fn dispatch(
         telemetry_handled_by_stream: false,
         served_by_target,
         routing,
+        captured_content,
     })
 }
 
@@ -1628,6 +1688,7 @@ fn emit_usage_event(
     cost_usd: f64,
     guardrail_blocked: bool,
     client: &ClientContext,
+    content: Option<CapturedContent>,
 ) {
     // Look up per-PK telemetry attribution tags from the live snapshot.
     // Empty `provider_key_id` (pre-dispatch error paths) → default
@@ -1712,7 +1773,7 @@ fn emit_usage_event(
     let exporters = snap.observability_exporters.entries();
     state
         .otlp_fan_out
-        .fan_out(&event, exporters.iter().map(|e| &e.value));
+        .fan_out(&event, content.as_ref(), exporters.iter().map(|e| &e.value));
 }
 
 /// Defence-in-depth sanitiser for operator-defined `ProviderKey
@@ -1930,6 +1991,11 @@ struct StreamCompletion {
     /// irrelevant — the customer must not be billed for tokens that
     /// never crossed the wire. Issue #419.
     chunks_delivered: u32,
+    /// Assembled assistant text for content-capturing exporters, accumulated
+    /// across chunks ONLY when an exporter wants full content (bounded to the
+    /// capture cap). Empty otherwise. Read by the on_complete telemetry
+    /// closure; never reaches the CP sink.
+    response_text: String,
 }
 
 /// Parameters needed to run output-guardrail evaluation at
@@ -2027,6 +2093,9 @@ fn build_sse_stream<F>(
     // onto every SSE chunk's `model` field per AISIX-Cloud#410. Owned
     // so it can move into the `async_stream::stream!` closure.
     client_facing_model: String,
+    // Largest content cap any content-capturing exporter wants, or `None` to
+    // skip response accumulation entirely (the common, content-free path).
+    content_cap: Option<u32>,
     on_complete: F,
 ) -> impl Stream<Item = Result<Event, Infallible>>
 where
@@ -2131,6 +2200,15 @@ where
                             window_buf.push_str(text);
                         } else if let Some(buf) = content_buffer.as_mut() {
                             buf.push_str(text);
+                        }
+                        // Content capture: assemble the response for the
+                        // observability fan-out, bounded to the cap so a long
+                        // stream can't grow the buffer without limit. Only when
+                        // an exporter wants full content.
+                        if let Some(cap) = content_cap {
+                            if comp.response_text.len() < cap as usize {
+                                comp.response_text.push_str(text);
+                            }
                         }
                     }
                     if let Some(u) = chunk.usage.as_ref() {
