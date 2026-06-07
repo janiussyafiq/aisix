@@ -38,7 +38,7 @@ pub use sink::{
     SinkAck, SinkCapabilities, SinkContent, SinkError, SinkHandle, SinkHealth, SinkPipeline,
     SinkRecord, SinkResult, SinkStatsSnapshot, SCHEMA_VERSION,
 };
-pub use usage::{RoutingAttemptEvent, UsageEvent, UsageSink};
+pub use usage::{UsageEvent, UsageSink};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ObsError {
