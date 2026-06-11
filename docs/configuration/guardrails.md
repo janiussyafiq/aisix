@@ -259,7 +259,7 @@ Expected result: the request is blocked before it reaches the upstream.
 The response body carries the OpenAI-shaped error envelope with the content-filter type:
 
 ```json title="Expected 422 body"
-{ "error": { "type": "content_filter", "message": "request blocked by content policy" } }
+{ "error": { "type": "content_filter", "message": "request blocked by content policy (guardrail 'block-secrets')" } }
 ```
 
 A benign prompt to the same model returns `200`. Propagation from the admin API to the running data plane is not instant; if the guardrail does not block immediately after creation, retry for a few seconds.
@@ -279,7 +279,7 @@ Confirm the guardrail is `enabled`, that its `hook_point` matches the side you a
 
 ### A blocked request returns `422`
 
-That is the expected outcome for a guardrail denial. The client-facing body uses `error.type: content_filter` with a generic message; the specific reason (which pattern or policy fired) is logged on the data plane, not returned to the caller.
+That is the expected outcome for a guardrail denial. The client-facing body uses `error.type: content_filter` and the message names the guardrail that fired (`guardrail '<name>'`); the specific reason (which pattern or policy matched) is logged on the data plane, not returned to the caller.
 
 ### A remote-API guardrail lets everything through
 
