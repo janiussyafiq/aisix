@@ -24,7 +24,7 @@ mod telemetry;
 use aisix_admin::{AdminState, ConfigStore, EtcdConfigStore};
 use aisix_cache::{Cache, MemoryCache, RedisCache};
 use aisix_core::models::Adapter;
-use aisix_core::{CacheBackend, Config, EtcdConfig, EtcdTlsConfig};
+use aisix_core::{CacheBackend, Config, EtcdConfig, EtcdTlsConfig, RateLimitBackend};
 use aisix_etcd::{EtcdConfigProvider, SnapshotCache, Supervisor};
 use aisix_gateway::Hub;
 use aisix_obs::{init_tracing, install_otlp_tracer, Metrics};
@@ -36,7 +36,7 @@ use aisix_provider_vertex::VertexBridge;
 use aisix_proxy::background::run_background_model_check_once;
 use aisix_proxy::budget::BudgetClient;
 use aisix_proxy::{CacheBackends, ProxyState};
-use aisix_ratelimit::Limiter;
+use aisix_ratelimit::{Limiter, RedisStore};
 use clap::Parser;
 use etcd_client::{Certificate, ConnectOptions, Identity, TlsOptions};
 use tokio::sync::watch;
@@ -376,7 +376,35 @@ async fn run(mut cfg: Config) -> anyhow::Result<()> {
 
     // Steps 7-8: build Hub, shared components, then routers.
     let hub = Arc::new(build_hub());
-    let limiter = Arc::new(Limiter::new());
+    // Rate-limit backend (#798). Default `memory` keeps per-process
+    // counters; `redis` shares them across every replica so a cluster
+    // enforces one global window instead of one-per-replica. The
+    // `ratelimit.backend` field is the selector — a stray `redis` block
+    // under `backend: memory` is ignored (Config::validate already
+    // guarantees a `redis` block when `backend = redis`).
+    let limiter = Arc::new(match cfg.ratelimit.backend {
+        RateLimitBackend::Redis => {
+            let redis_cfg = cfg
+                .ratelimit
+                .redis
+                .as_ref()
+                .expect("validated: ratelimit.redis present when backend = redis");
+            tracing::info!(
+                target: "aisix::ratelimit",
+                backend = "redis",
+                "connecting shared rate-limit backend"
+            );
+            // No URL in the message: redis URLs carry credentials.
+            let store = RedisStore::connect(&redis_cfg.url)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("redis rate-limit connect failed (ratelimit.redis.url): {e}")
+                })?
+                .with_conc_ttl(cfg.ratelimit.concurrency_ttl_secs);
+            Limiter::with_store(Arc::new(store))
+        }
+        RateLimitBackend::Memory => Limiter::new(),
+    });
     let metrics = Arc::new(Metrics::new(true));
     // Cache backends (#519 B.8). The memory cache is always built
     // (in-process, cheap); the redis cache is built iff `cache.redis`
