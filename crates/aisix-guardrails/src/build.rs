@@ -342,6 +342,88 @@ fn build_one_inner(
         GuardrailKind::AliyunTextModeration(_) => {
             Err(BuildError::FeatureDisabled("aliyun-text-moderation"))
         }
+        #[cfg(feature = "lakera")]
+        GuardrailKind::Lakera(cfg) => {
+            // #52: HTTP-based /v2/guard dispatcher. cp-api already decrypted
+            // the api_key at projection time; the config carries plaintext.
+            // Endpoint is per-row (default api.lakera.ai, overridable for
+            // regional/self-hosted deployments and tests).
+            let g = crate::lakera::LakeraGuardrail::new(
+                row.name.clone(),
+                cfg,
+                row.hook_point,
+                row.fail_open,
+            );
+            Ok(Some(Arc::new(g)))
+        }
+        #[cfg(not(feature = "lakera"))]
+        GuardrailKind::Lakera(_) => Err(BuildError::FeatureDisabled("lakera")),
+        #[cfg(feature = "openai-moderation")]
+        GuardrailKind::OpenaiModeration(cfg) => {
+            // #52: HTTP-based /moderations dispatcher. cp-api already
+            // decrypted the api_key at projection time; the config carries
+            // plaintext. Endpoint is per-row (default api.openai.com/v1).
+            // Moderation scores are 0..=1; a threshold outside that range
+            // can never (or always) fire, so reject the row rather than
+            // silently running a policy the operator didn't intend.
+            for (category, threshold) in &cfg.category_thresholds {
+                if !(0.0..=1.0).contains(threshold) {
+                    return Err(BuildError::InvalidValue {
+                        field: "category_thresholds",
+                        value: format!("{category}={threshold}"),
+                    });
+                }
+            }
+            let g = crate::openai_moderation::OpenaiModerationGuardrail::new(
+                row.name.clone(),
+                cfg,
+                row.hook_point,
+                row.fail_open,
+            );
+            Ok(Some(Arc::new(g)))
+        }
+        #[cfg(not(feature = "openai-moderation"))]
+        GuardrailKind::OpenaiModeration(_) => Err(BuildError::FeatureDisabled("openai-moderation")),
+        #[cfg(feature = "presidio")]
+        GuardrailKind::Presidio(cfg) => {
+            // #52: analyze→anonymize dispatcher against customer-run
+            // Presidio containers (no vendor secret). The enum-ish fields
+            // (`default_action`, per-entity actions, `operator`) are
+            // resolved here so a typo can't silently weaken the policy.
+            let default_action =
+                PiiAction::parse(&cfg.default_action).ok_or_else(|| BuildError::InvalidValue {
+                    field: "default_action",
+                    value: cfg.default_action.clone(),
+                })?;
+            let mut entity_actions = std::collections::BTreeMap::new();
+            for e in &cfg.entities {
+                if let Some(s) = e.action.as_deref() {
+                    let action = PiiAction::parse(s).ok_or_else(|| BuildError::InvalidValue {
+                        field: "entities[].action",
+                        value: s.to_owned(),
+                    })?;
+                    entity_actions.insert(e.entity_type.to_uppercase(), action);
+                }
+            }
+            let anonymizers = crate::presidio::operator_config(&cfg.operator).ok_or_else(|| {
+                BuildError::InvalidValue {
+                    field: "operator",
+                    value: cfg.operator.clone(),
+                }
+            })?;
+            let g = crate::presidio::PresidioGuardrail::new(
+                row.name.clone(),
+                cfg,
+                row.hook_point,
+                row.fail_open,
+                default_action,
+                entity_actions,
+                anonymizers,
+            );
+            Ok(Some(Arc::new(g)))
+        }
+        #[cfg(not(feature = "presidio"))]
+        GuardrailKind::Presidio(_) => Err(BuildError::FeatureDisabled("presidio")),
     }
 }
 
@@ -1238,6 +1320,29 @@ mod tests {
         assert_eq!(chain.len(), 1);
         let v = chain.check_input(&req("ok")).await;
         assert!(v.is_block());
+    }
+
+    /// #52: an openai_moderation row with a category threshold outside
+    /// 0..=1 is rejected at build time (moderation scores are 0..=1, so
+    /// such a threshold can never — or always — fire).
+    #[cfg(feature = "openai-moderation")]
+    #[tokio::test]
+    async fn openai_moderation_out_of_range_threshold_skips_row() {
+        let table: ResourceTable<DomainGuardrail> = ResourceTable::default();
+        table.insert(entry(
+            "bad-threshold",
+            "g-1",
+            parse(
+                r#"{
+                    "name": "bad-threshold",
+                    "kind": "openai_moderation",
+                    "api_key": "sk-x",
+                    "category_thresholds": { "violence": 1.5 }
+                }"#,
+            ),
+        ));
+        let chain = build_chain_from_snapshot(&table, None);
+        assert_eq!(chain.len(), 0, "out-of-range threshold row must be skipped");
     }
 
     /// Phase 2 contract: kind=bedrock rows materialise into the
