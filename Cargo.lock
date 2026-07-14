@@ -428,6 +428,7 @@ dependencies = [
  "uuid",
  "wiremock",
  "x509-parser",
+ "yaml-rust2",
 ]
 
 [[package]]
