@@ -422,6 +422,7 @@ async fn call_with_optional_timeout(
             Ok(result) => result,
             Err(_) => Err(BridgeError::Timeout {
                 elapsed_ms: d.as_millis() as u64,
+                cause: String::new(),
             }),
         },
         None => caller.call(target, req).await,
@@ -639,7 +640,10 @@ mod tests {
             .on(
                 "judge",
                 vec![
-                    Err(BridgeError::Timeout { elapsed_ms: 1 }),
+                    Err(BridgeError::Timeout {
+                        cause: String::new(),
+                        elapsed_ms: 1,
+                    }),
                     ok("judge", "second attempt wins"),
                 ],
             );
